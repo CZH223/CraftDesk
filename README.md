@@ -3,6 +3,7 @@
   <h1>CraftDesk</h1>
   <p><b>Minecraft 多服务器管理器</b></p>
   <p>在一个窗口里管理你的所有 Minecraft 服务端：启停、看日志、装模组、管玩家、连跨服。</p>
+  <p>此README由Deepseek V4.1 Flash总结</p>
 
 [![Electron](https://img.shields.io/badge/Electron-33-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)](https://react.dev/)
