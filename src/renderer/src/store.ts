@@ -16,6 +16,7 @@ export type ViewKey =
   | 'console'
   | 'properties'
   | 'registry'
+  | 'map'
   | 'settings'
 export type PanelKey = 'files' | 'players' | 'plugins' | 'configs' | 'backups'
 

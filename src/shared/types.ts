@@ -180,6 +180,61 @@ export interface PropertiesEntry {
   important?: boolean
 }
 
+// ---------------------------------------------------------------- 世界地图
+
+export interface MapRegionRef {
+  rx: number
+  rz: number
+}
+
+export interface MapBounds {
+  minX: number
+  maxX: number
+  minZ: number
+  maxZ: number
+}
+
+export interface MapDimensionInfo {
+  id: 'overworld' | 'nether' | 'end'
+  label: string
+  regionDir: string
+  regions: MapRegionRef[]
+  minX: number
+  maxX: number
+  minZ: number
+  maxZ: number
+  /** 去掉远处零星区块后的范围，用于「适应画面」 */
+  coreBounds: MapBounds
+}
+
+export interface WorldMapInfo {
+  exists: boolean
+  worldDir: string
+  levelName: string
+  spawn: { x: number; z: number } | null
+  dimensions: MapDimensionInfo[]
+}
+
+export interface MapPlayerPosition {
+  name: string
+  uuid?: string
+  x: number
+  y: number
+  z: number
+  /** overworld / nether / end，或模组维度的 id */
+  dimension: string
+}
+
+export interface MapTileResult {
+  /** data:image/png;base64,... */
+  png: string
+  /** 这一块渲染用了多久（缓存命中时为 0） */
+  ms: number
+  cached: boolean
+  /** 有地表数据的格子数 */
+  explored: number
+}
+
 export interface PlayerRecord {
   name: string
   uuid?: string
@@ -464,6 +519,8 @@ export interface VelocityServerEntry {
 export interface VelocityFile {
   path: string
   exists: boolean
+  /** 配置格式：Velocity 用 TOML，BungeeCord / Waterfall 用 YAML */
+  format?: 'velocity' | 'bungee'
   fields: TomlField[]
   servers: VelocityServerEntry[]
   tryList: string[]

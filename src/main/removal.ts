@@ -44,7 +44,7 @@ export function whyNotDeletable(dir: string, protectedDirs: string[] = []): stri
     return `${full} 是磁盘根目录，不像是服务器目录`
   }
 
-  // 只挂在磁盘根目录下面一层的（M:\Minecraft、/home 这种），删掉它
+  // 只挂在磁盘根目录下面一层的（D:\servers、/home 这种），删掉它
   // 牵连的东西太多，不值得赌。正常导入的服务器都是 盘:\某处\服务器名 这个深度。
   // 这条比看上去严，是有意的：删错的代价是不可逆的，删不掉只是麻烦。
   const depth = full.slice(parsed.root.length).split(sep).filter(Boolean).length

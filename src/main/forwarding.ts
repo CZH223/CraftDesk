@@ -10,6 +10,9 @@ import type { ServerLayout } from './layout'
  * 玩家 IP 和 UUID，否则玩家一到转发那步就被踢回去。转发方式有三种：
  *
  * 1. Fabric 系装 FabricProxy / FabricProxy-Lite（读它的 config 拿密钥）
+ *    - FabricProxy-Lite 只支持 Velocity 的 modern 转发；BungeeCord / Waterfall
+ *      连上来会被它用 disconnectMessage 踢掉（默认文案是「This server requires
+ *      you to connect with Velocity.」）。Bungee 后端要用完整版 FabricProxy。
  * 2. Paper 系用原生的 Velocity 转发（config/paper-global.yml 里 proxies.velocity）
  * 3. Bukkit 系用传统的 BungeeCord 转发（spigot.yml 里 settings.bungeecord）
  *
@@ -89,22 +92,31 @@ export interface ProxyReady {
   ready: boolean
   /** 靠什么接转发，用于界面上的说明 */
   via: string | null
+  /** 接转发的方式：模组 / Paper 原生 / BungeeCord 传统 */
+  viaKind: 'mod' | 'paper' | 'bungee' | null
 }
 
 /** 这台服务端能不能接代理端的转发 */
 export async function probeProxyReady(
   layout: ServerLayout,
-  kind: ServerKind | ''
+  kind: ServerKind | '',
+  proxyFormat: 'velocity' | 'bungee' = 'velocity'
 ): Promise<ProxyReady> {
   const fw = await probeForwarding(layout)
-  if (fw.mod) return { ready: true, via: fw.mod }
+  if (fw.mod) {
+    // Lite 版只实现了 Velocity 的 modern 转发，Bungee/Waterfall 的 legacy 握手它不认
+    if (proxyFormat === 'bungee' && fw.mod === 'FabricProxy-Lite') {
+      return { ready: false, via: fw.mod, viaKind: 'mod' }
+    }
+    return { ready: true, via: fw.mod, viaKind: 'mod' }
+  }
 
-  // Paper 系原生支持 Velocity 转发，不需要模组
-  if (['paper', 'purpur', 'spigot', 'bukkit'].includes(kind)) {
+  // Paper 系原生支持 Velocity 转发，不需要模组；但对 Bungee 无效
+  if (proxyFormat !== 'bungee' && ['paper', 'purpur', 'spigot', 'bukkit'].includes(kind)) {
     for (const rel of ['config/paper-global.yml', 'config/paper-global.yaml']) {
       const text = await readIfExists(join(layout.core, rel))
       if (text && yamlFlagUnder(text, ['proxies', 'velocity', 'enabled'], 'true')) {
-        return { ready: true, via: 'Paper 原生 Velocity 转发' }
+        return { ready: true, via: 'Paper 原生 Velocity 转发', viaKind: 'paper' }
       }
     }
   }
@@ -112,10 +124,10 @@ export async function probeProxyReady(
   // BungeeCord 传统转发：spigot.yml 里开 bungeecord
   const spigot = await readIfExists(join(layout.core, 'spigot.yml'))
   if (spigot && yamlFlagUnder(spigot, ['settings', 'bungeecord'], 'true')) {
-    return { ready: true, via: 'BungeeCord 转发' }
+    return { ready: true, via: 'BungeeCord 转发', viaKind: 'bungee' }
   }
 
-  return { ready: false, via: null }
+  return { ready: false, via: null, viaKind: null }
 }
 
 /**
@@ -125,6 +137,11 @@ export async function probeProxyReady(
  * 按行缩进一块块钻进去，找不到就算了。
  */
 export function yamlFlagUnder(text: string, path: string[], value: string): boolean {
+  return yamlValueUnder(text, path) === value
+}
+
+/** 按缩进读嵌套 YAML 的最后一个值；找不到返回 null */
+export function yamlValueUnder(text: string, path: string[]): string | null {
   const lines = text
     .split(/\r?\n/)
     .map((l) => l.replace(/\s+#.*$/, ''))
@@ -133,7 +150,8 @@ export function yamlFlagUnder(text: string, path: string[], value: string): bool
   let start = 0
   let parentIndent = -1
 
-  for (const want of path) {
+  for (let p = 0; p < path.length; p++) {
+    const want = path[p]
     let next = -1
     for (let i = start; i < lines.length; i++) {
       const line = lines[i]
@@ -144,17 +162,15 @@ export function yamlFlagUnder(text: string, path: string[], value: string): bool
       const m = line.trim().match(/^([^:#][^:]*):\s*(.*)$/)
       if (!m || m[1].trim() !== want) continue
 
-      if (want === path[path.length - 1]) {
-        return unquote(m[2].trim()) === value
-      }
+      if (p === path.length - 1) return unquote(m[2].trim())
       parentIndent = indent
       next = i
       break
     }
-    if (next < 0) return false
+    if (next < 0) return null
     start = next + 1
   }
-  return false
+  return null
 }
 
 function unquote(s: string): string {

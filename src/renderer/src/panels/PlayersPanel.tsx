@@ -3,12 +3,25 @@ import { Icon } from '../components/Icon'
 import { useStore } from '../store'
 import type { PlayerRecord, ServerView } from '../../../shared/types'
 
+/**
+ * 头像只在第一次打开面板时下载，之后在同一次运行里直接复用；
+ * 磁盘缓存由主进程负责（7 天）。
+ */
+const AVATAR_MEMO = new Map<string, string | null>()
+
+function avatarColor(name: string): string {
+  let h = 0
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0
+  return `hsl(${h % 360} 34% 34%)`
+}
+
 export function PlayersPanel({ server }: { server: ServerView }): JSX.Element {
   const toast = useStore((s) => s.toast)
   const [players, setPlayers] = useState<PlayerRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
   const [newName, setNewName] = useState('')
+  const [avatars, setAvatars] = useState<Record<string, string | null>>({})
 
   const onlineCount = server.runtime.onlineCount
 
@@ -23,6 +36,40 @@ export function PlayersPanel({ server }: { server: ServerView }): JSX.Element {
     setLoading(true)
     void load()
   }, [load, onlineCount])
+
+  // 玩家列表出来后异步补头像；取不到就保持首字母占位
+  useEffect(() => {
+    let alive = true
+    if (!players.length) {
+      setAvatars({})
+      return
+    }
+    const list = players.slice(0, 200)
+    const known: Record<string, string | null> = {}
+    let need = false
+    for (const p of list) {
+      if (AVATAR_MEMO.has(p.name)) known[p.name] = AVATAR_MEMO.get(p.name) ?? null
+      else need = true
+    }
+    setAvatars((prev) => ({ ...prev, ...known }))
+    if (!need) return
+
+    void window.api.players
+      .avatars(
+        server.id,
+        list.map((p) => ({ name: p.name, uuid: p.uuid }))
+      )
+      .then((res) => {
+        if (!alive || !res.ok) return
+        for (const [name, url] of Object.entries(res.data!)) AVATAR_MEMO.set(name, url)
+        setAvatars(
+          Object.fromEntries(list.map((p) => [p.name, AVATAR_MEMO.get(p.name) ?? null]))
+        )
+      })
+    return () => {
+      alive = false
+    }
+  }, [players, server.id])
 
   const act = async (
     kind: 'op' | 'whitelist' | 'ban',
@@ -94,17 +141,23 @@ export function PlayersPanel({ server }: { server: ServerView }): JSX.Element {
 
         {filtered.map((p) => (
           <div className="row" key={p.name}>
-            <span
-              className="server-icon"
-              style={{
-                background: p.online ? '#22c55e' : '#3f3f46',
-                width: 30,
-                height: 30,
-                fontSize: 11
-              }}
-            >
-              {p.name.slice(0, 2).toUpperCase()}
-            </span>
+            {avatars[p.name] ? (
+              <img
+                className="player-avatar"
+                src={avatars[p.name]!}
+                alt=""
+                draggable={false}
+                title={`${p.name} 的头像`}
+              />
+            ) : (
+              <span
+                className="player-avatar player-avatar-fallback"
+                style={{ background: avatarColor(p.name) }}
+                title={p.name}
+              >
+                {p.name.slice(0, 2).toUpperCase()}
+              </span>
+            )}
             <div className="row-main">
               <div className="row-title">
                 {p.name}

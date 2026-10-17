@@ -73,6 +73,21 @@ const TESTS = [
     group: 'fast',
     what: '代理端初始配置：velocity.toml / config.yml 生成，能被自己的解析器读回来'
   },
+  {
+    name: 'test-bungee-config.ts',
+    group: 'fast',
+    what: 'BungeeCord / Waterfall 的 config.yml 读写（官方模板、priorities、类型、注释）'
+  },
+  {
+    name: 'test-worldmap.ts',
+    group: 'fast',
+    what: '世界地图：位解包 / PNG 编码 / 损坏 region / 世界目录与连通块'
+  },
+  {
+    name: 'test-positions.ts',
+    group: 'fast',
+    what: '地图玩家位置：控制台/RCON 解析、轮询缓存、维度映射'
+  },
   { name: 'test-installers.ts', group: 'net', what: 'Forge / NeoForge 版本表与安装器地址' },
   {
     name: 'test-remote-icon.ts',
@@ -177,7 +192,7 @@ if (listOnly) {
 
 /**
  * 用 esbuild 的 JS 接口打包，不拼命令行。
- * 路径里有空格（"M:\PCL CE\…"），走 shell 拼参数会被拆开，
+ * 路径里有空格（"D:\My Servers\…"），走 shell 拼参数会被拆开，
  * 之前就是这么失败在一个看不懂的报错上的。
  */
 function bundle(test) {

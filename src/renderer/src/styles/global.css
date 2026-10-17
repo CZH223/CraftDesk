@@ -3098,3 +3098,246 @@ body.resizing * {
   pointer-events: none;
   max-width: 60%;
 }
+
+/* ============================================================ 世界地图 */
+
+.map-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.map-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.map-dims {
+  display: flex;
+  gap: 5px;
+}
+
+.map-readout {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.map-readout span {
+  min-width: 64px;
+}
+
+.map-tools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.map-scale {
+  min-width: 62px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.map-pending,
+.map-failed {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.map-failed {
+  color: var(--warn, #eab308);
+}
+
+.spin.small {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+}
+
+.map-view {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  background:
+    radial-gradient(circle at 50% 42%, #121a22, #080c11 72%),
+    #080c11;
+}
+
+.map-view.dragging {
+  cursor: grabbing;
+}
+
+.map-view .center-state {
+  position: absolute;
+  inset: 0;
+}
+
+.map-tile {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+  user-select: none;
+}
+
+.map-view.sharp .map-tile {
+  image-rendering: pixelated;
+}
+
+.map-tile-pending {
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.045);
+  border-radius: 2px;
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.022) 0 6px,
+    transparent 6px 12px
+  );
+}
+
+.map-note {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  max-width: 88%;
+  padding: 5px 11px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.map-compass {
+  position: absolute;
+  right: 14px;
+  top: 14px;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.38);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  color: var(--text-muted);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.map-arrow {
+  color: var(--ok, #22c55e);
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* ============================================================ 玩家头像 */
+
+.player-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 5px;
+  flex-shrink: 0;
+  object-fit: cover;
+  image-rendering: pixelated;
+  background: #1c1c20;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.player-avatar-fallback {
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+/* 地图上的在线玩家标记 */
+.map-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.map-player {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  transform: translate(-50%, -100%);
+  pointer-events: none;
+  transition: left 0.8s linear, top 0.8s linear;
+}
+
+.map-player-head {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  background: #1a1a1e;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.55);
+}
+
+.map-player-head img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  image-rendering: pixelated;
+}
+
+.map-player-name {
+  padding: 1px 5px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.66);
+  color: #fff;
+  font-size: 10.5px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.map-player-pin {
+  width: 0;
+  height: 0;
+  margin-top: -1px;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid rgba(255, 255, 255, 0.92);
+}

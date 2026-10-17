@@ -3,7 +3,7 @@ import { join, relative, sep } from 'node:path'
 import type { ServerConfig } from '../shared/types'
 import type { BackendCheck, BackendIssue, VelocityServerEntry } from '../shared/types'
 import { resolveLayout, type ServerLayout } from './layout'
-import { findProxyMod, probeProxyReady } from './forwarding'
+import { findProxyMod, probeProxyReady, yamlValueUnder } from './forwarding'
 import { parsePropertiesFile } from './properties'
 
 interface ManagedServer {
@@ -63,6 +63,8 @@ export interface BackendCheckOptions {
   forwardingMode: string
   /** 代理端是否开启正版验证 */
   proxyOnlineMode: boolean
+  /** 代理端格式：Velocity 是 modern 转发，Bungee / Waterfall 是 legacy */
+  proxyFormat: 'velocity' | 'bungee'
   /** [servers] 里的后端列表 */
   entries: VelocityServerEntry[]
   /** CraftDesk 里托管的所有服务器 */
@@ -134,70 +136,124 @@ export async function checkBackends(opts: BackendCheckOptions): Promise<BackendC
       continue
     }
 
-    // ---- 1. 有没有装转发模组 ----
+    // ---- 1. 后端靠什么接转发 ----
+    // 模组、Paper 原生、spigot.yml 里的 bungeecord 都算数：
+    // 只认「有没有 FabricProxy」会把一堆本来配好的 Paper / Purpur 后端判成错误。
     const mod = await findProxyMod(match.layout)
-    if (!mod) {
+    const ready = await probeProxyReady(match.layout, match.cfg.kind, opts.proxyFormat)
+
+    if (ready.ready && ready.viaKind === 'mod') {
+      if (mod) {
+        check.proxyMod = mod.name
+        check.proxyModFile = mod.file
+        check.proxyConfigPath = mod.configPath
+        check.proxyConfigRel = mod.configPath
+          ? relative(match.layout.root, mod.configPath).split(sep).join('/')
+          : null
+
+        // ---- 2. 配置文件 ----
+        if (!mod.configPath) {
+          issues.push({
+            level: 'warn',
+            text: `装了 ${mod.name} 但找不到它的配置文件，多半是服务器还没启动过一次。`
+          })
+          results.push(check)
+          continue
+        }
+
+        const cfg = await readProxyModConfig(mod.configPath)
+        check.backendSecret = cfg.secret
+        check.hackOnlineMode = cfg.hackOnlineMode
+
+        // ---- 3. 密钥是否一致 ----
+        // BungeeCord 的 legacy 转发没有密钥，别拿空值去比
+        if (opts.proxyFormat !== 'bungee') {
+          if (!cfg.secret) {
+            issues.push({ level: 'warn', text: `${mod.name} 的配置里没有填 secret。` })
+          } else if (!opts.proxySecret) {
+            issues.push({
+              level: 'warn',
+              text: '代理端的 forwarding.secret 读不到，无法比对密钥。'
+            })
+          } else if (cfg.secret !== opts.proxySecret) {
+            check.secretOk = false
+            issues.push({
+              level: 'error',
+              text: `密钥不一致：后端是 "${cfg.secret}"，代理端是 "${opts.proxySecret}"。玩家会被拒绝登录。`
+            })
+          } else {
+            check.secretOk = true
+          }
+        }
+
+        // ---- 4. 转发模式（只有 Velocity 的 modern 模式要这个）----
+        if (opts.proxyFormat !== 'bungee' && opts.forwardingMode !== 'modern') {
+          issues.push({
+            level: 'error',
+            text:
+              `玩家信息转发模式是 "${opts.forwardingMode}"，但 ${mod.name} 需要 modern 模式。` +
+              '到「基础设置」里把 player-info-forwarding-mode 改成 modern。'
+          })
+        }
+      }
+    } else if (ready.ready && ready.viaKind === 'paper' && opts.proxyFormat !== 'bungee') {
+      // Paper 原生 Velocity 转发：paper-global.yml 里也有一份 secret
+      check.proxyMod = ready.via
+      const path = join(match.layout.core, 'config', 'paper-global.yml')
+      const text = await fs.readFile(path, 'utf-8').catch(() => '')
+      const secret = text ? yamlValueUnder(text, ['proxies', 'velocity', 'secret']) : null
+      check.proxyConfigPath = path
+      check.proxyConfigRel = 'config/paper-global.yml'
+      check.backendSecret = secret
+      if (!secret) {
+        issues.push({ level: 'warn', text: 'Paper 的 proxies.velocity.secret 是空的。' })
+      } else if (!opts.proxySecret) {
+        issues.push({ level: 'warn', text: '代理端的 forwarding.secret 读不到，无法比对密钥。' })
+      } else if (secret !== opts.proxySecret) {
+        check.secretOk = false
+        issues.push({
+          level: 'error',
+          text: `密钥不一致：Paper 后端是 "${secret}"，代理端是 "${opts.proxySecret}"。玩家会被拒绝登录。`
+        })
+      } else {
+        check.secretOk = true
+      }
+    } else if (ready.ready && ready.viaKind === 'bungee') {
+      // spigot.yml 里开了 bungeecord：传统转发没有密钥可对
+      check.proxyMod = ready.via
+      check.proxyConfigRel = 'spigot.yml'
+    } else if (opts.proxyFormat === 'bungee' && mod?.name === 'FabricProxy-Lite') {
+      // 这是 Bungee 下最常见的坑：Lite 版只支持 Velocity，玩家会看到
+      // FabricProxy-Lite.toml 里那句自定义 disconnectMessage，容易被当成网络问题。
+      // 把这句话原样带出来，用户一对日志就知道踢人的是哪个模组。
+      const text = mod.configPath ? await fs.readFile(mod.configPath, 'utf-8').catch(() => '') : ''
+      const custom = text.match(/^\s*disconnectMessage\s*=\s*["']([^"']*)["']/m)?.[1] ?? ''
       issues.push({
         level: 'error',
         text:
-          '后端没有装 FabricProxy 或 FabricProxy-Lite。只把服务器写进 [servers] 是不够的，' +
-          '后端必须靠这个模组才能接收代理端传来的玩家 IP 和 UUID。'
+          'FabricProxy-Lite 只支持 Velocity 的 modern 转发，BungeeCord / Waterfall 的玩家会被它踢掉' +
+          (custom ? `，踢出文案就是它配置里的「${custom}」` : '') +
+          '。建议直接用 Velocity 作为代理端；或者把后端换成 Paper / Purpur 并打开 spigot.yml 的 settings.bungeecord；' +
+          '模组服也可以换用支持 BungeeCord 的 FabricProxy 分支（如 FabricProxy-Legacy）。'
       })
       results.push(check)
       continue
-    }
-
-    check.proxyMod = mod.name
-    check.proxyModFile = mod.file
-    check.proxyConfigPath = mod.configPath
-    check.proxyConfigRel = mod.configPath
-      ? relative(match.layout.root, mod.configPath).split(sep).join('/')
-      : null
-
-    // ---- 2. 配置文件 ----
-    if (!mod.configPath) {
-      issues.push({
-        level: 'warn',
-        text: `装了 ${mod.name} 但找不到它的配置文件，多半是服务器还没启动过一次。`
-      })
-      results.push(check)
-      continue
-    }
-
-    const cfg = await readProxyModConfig(mod.configPath)
-    check.backendSecret = cfg.secret
-    check.hackOnlineMode = cfg.hackOnlineMode
-
-    // ---- 3. 密钥是否一致 ----
-    if (!cfg.secret) {
-      issues.push({ level: 'warn', text: `${mod.name} 的配置里没有填 secret。` })
-    } else if (!opts.proxySecret) {
-      issues.push({
-        level: 'warn',
-        text: '代理端的 forwarding.secret 读不到，无法比对密钥。'
-      })
-    } else if (cfg.secret !== opts.proxySecret) {
-      check.secretOk = false
-      issues.push({
-        level: 'error',
-        text: `密钥不一致：后端是 "${cfg.secret}"，代理端是 "${opts.proxySecret}"。玩家会被拒绝登录。`
-      })
     } else {
-      check.secretOk = true
-    }
-
-    // ---- 4. 转发模式 ----
-    if (opts.forwardingMode !== 'modern') {
       issues.push({
         level: 'error',
         text:
-          `玩家信息转发模式是 "${opts.forwardingMode}"，但 ${mod.name} 需要 modern 模式。` +
-          '到「基础设置」里把 player-info-forwarding-mode 改成 modern。'
+          opts.proxyFormat === 'bungee'
+            ? '后端还没打开 BungeeCord 转发。Paper / Purpur 后端在 spigot.yml 里把 settings.bungeecord 改成 true；' +
+              'Fabric 后端要装完整版 FabricProxy（FabricProxy-Lite 不支持 BungeeCord）。'
+            : '后端还没打开 Velocity 转发。Paper / Purpur 后端在 config/paper-global.yml 里把 proxies.velocity.enabled 改成 true；' +
+              'Fabric 后端要装 FabricProxy 或 FabricProxy-Lite。'
       })
+      results.push(check)
+      continue
     }
 
     // ---- 5. 正版验证自洽性 ----
-    if (check.backendOnlineMode === true && cfg.hackOnlineMode === false) {
+    if (check.backendOnlineMode === true && check.hackOnlineMode === false) {
       issues.push({
         level: 'warn',
         text:
@@ -206,7 +262,7 @@ export async function checkBackends(opts: BackendCheckOptions): Promise<BackendC
           '建议把后端改成 online-mode=false，或把 hackOnlineMode 打开。'
       })
     }
-    if (check.backendOnlineMode === false && cfg.hackOnlineMode === true) {
+    if (check.backendOnlineMode === false && check.hackOnlineMode === true) {
       issues.push({
         level: 'warn',
         text:

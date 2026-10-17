@@ -169,6 +169,7 @@ export async function readVelocityFile(dir: string): Promise<VelocityFile> {
   return {
     path,
     exists,
+    format: 'velocity',
     fields: parsed.fields,
     servers: parsed.servers,
     tryList: parsed.tryList,

@@ -5,7 +5,9 @@
  *   --outfile=tmp/test-backends.cjs && node tmp/test-backends.cjs <CraftDesk配置.json> <代理端目录>
  */
 import { promises as fs } from 'node:fs'
+import { join } from 'node:path'
 import { readVelocityFile } from '../src/main/velocity'
+import { readBungeeFile } from '../src/main/bungee'
 import { checkBackends } from '../src/main/backends'
 import type { ServerConfig } from '../src/shared/types'
 
@@ -17,14 +19,22 @@ async function main(): Promise<void> {
   }
 
   const store = JSON.parse(await fs.readFile(storePath, 'utf-8')) as { servers: ServerConfig[] }
-  const file = await readVelocityFile(proxyDir)
+  const isBungee = await exists(join(proxyDir, 'config.yml')) && !(await exists(join(proxyDir, 'velocity.toml')))
+  const file = isBungee ? await readBungeeFile(proxyDir) : await readVelocityFile(proxyDir)
   const field = (k: string): string =>
     file.fields.find((f) => f.section === '' && f.key === k)?.value ?? ''
+  const forwardingMode = isBungee
+    ? field('ip_forward') === 'true'
+      ? 'legacy'
+      : 'none'
+    : field('player-info-forwarding-mode') || 'none'
+  const onlineMode = (isBungee ? field('online_mode') : field('online-mode')) === 'true'
 
   console.log('══ 代理端配置 ══')
-  console.log(`  转发模式      ${field('player-info-forwarding-mode')}`)
-  console.log(`  正版验证      ${field('online-mode')}`)
-  console.log(`  密钥文件      ${file.secretFile}`)
+  console.log(`  格式          ${isBungee ? 'config.yml (Bungee/Waterfall)' : 'velocity.toml'}`)
+  console.log(`  转发模式      ${forwardingMode}`)
+  console.log(`  正版验证      ${onlineMode}`)
+  console.log(`  密钥文件      ${file.secretFile || '(Bungee 没有密钥)'}`)
   console.log(`  密钥          ${file.secret ?? '(读不到)'}`)
   console.log(`  后端数量      ${file.servers.length}`)
   console.log(`  try 顺序      ${file.tryList.join(' → ') || '(空)'}`)
@@ -32,8 +42,9 @@ async function main(): Promise<void> {
 
   const checks = await checkBackends({
     proxySecret: file.secret,
-    forwardingMode: field('player-info-forwarding-mode') || 'none',
-    proxyOnlineMode: field('online-mode') === 'true',
+    forwardingMode,
+    proxyOnlineMode: onlineMode,
+    proxyFormat: isBungee ? 'bungee' : 'velocity',
     entries: file.servers,
     managed: store.servers,
     runningIds: new Set<string>()
@@ -73,6 +84,15 @@ async function main(): Promise<void> {
   console.log(
     `\n  合计：${matched}/${checks.length} 个后端能在 CraftDesk 里对上号，${errors} 个错误，${warns} 个警告`
   )
+}
+
+async function exists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p)
+    return true
+  } catch {
+    return false
+  }
 }
 
 void main()

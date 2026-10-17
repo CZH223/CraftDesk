@@ -12,7 +12,7 @@ import { networkCounts } from '../shared/network'
 import { resolveLayout, type ServerLayout } from './layout'
 import { probeForwarding, probeProxyReady } from './forwarding'
 import { parsePropertiesFile } from './properties'
-import { readVelocityFile } from './velocity'
+import { readProxyFile } from './proxyConfig'
 
 /**
  * 网络拓扑。
@@ -100,7 +100,7 @@ export async function buildTopology(
   for (const [, m] of managed) {
     if (!isProxyKind(m.cfg.kind)) continue
 
-    const file = await readVelocityFile(m.cfg.dir)
+    const file = await readProxyFile(m.cfg)
     const field = (k: string): string =>
       file.fields.find((f) => f.section === '' && f.key === k)?.value ?? ''
 
@@ -149,7 +149,11 @@ export async function buildTopology(
        */
       const ready: { target: Managed; fw: { mod: string | null; secret: string | null } }[] = []
       for (const target of targets) {
-        const judge = await probeProxyReady(target.layout, target.cfg.kind)
+        const judge = await probeProxyReady(
+          target.layout,
+          target.cfg.kind,
+          file.format === 'bungee' ? 'bungee' : 'velocity'
+        )
         if (!judge.ready) continue
         ready.push({ target, fw: await probeForwarding(target.layout) })
       }

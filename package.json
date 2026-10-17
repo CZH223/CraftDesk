@@ -1,7 +1,7 @@
 {
   "name": "craftdesk",
   "productName": "CraftDesk",
-  "version": "1.0.0",
+  "version": "1.1.4",
   "description": "Minecraft 多服务器管理器（Windows 桌面端）",
   "main": "./out/main/index.js",
   "author": "CraftDesk",

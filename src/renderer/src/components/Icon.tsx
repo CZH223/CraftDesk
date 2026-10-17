@@ -55,6 +55,7 @@ export type IconName =
   | 'network'
   | 'wrench'
   | 'image'
+  | 'map'
 
 const PATHS: Record<IconName, ReactNode> = {
   dashboard: (
@@ -79,6 +80,12 @@ const PATHS: Record<IconName, ReactNode> = {
       <circle cx="8.4" cy="10" r="1.7" />
       <path d="M3.4 17.2l4.3-4a1.7 1.7 0 012.4 0l3.2 3.1" />
       <path d="M12.2 15.6l1.9-1.8a1.7 1.7 0 012.4 0l3.9 3.7" />
+    </>
+  ),
+  map: (
+    <>
+      <path d="M3 6.5 9 4l6 2.5L21 4v13.5L15 20l-6-2.5L3 20z" />
+      <path d="M9 4v13.5M15 6.5V20" />
     </>
   ),
   'folder-open': (

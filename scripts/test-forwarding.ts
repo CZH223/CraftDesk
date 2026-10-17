@@ -67,6 +67,17 @@ async function main(): Promise<void> {
   check('算后端', (await probeProxyReady(fabric, 'fabric')).ready, true)
   check('说明是哪个模组', (await probeProxyReady(fabric, 'fabric')).via, 'FabricProxy-Lite')
 
+  console.log('\n══ Fabric + FabricProxy-Lite 接 BungeeCord ══')
+  // Lite 版只支持 Velocity：Bungee 连上来会被它的 disconnectMessage 踢掉
+  check('Lite 版不能当 Bungee 后端', (await probeProxyReady(fabric, 'fabric', 'bungee')).ready, false)
+  check('仍能指出是 Lite 版', (await probeProxyReady(fabric, 'fabric', 'bungee')).via, 'FabricProxy-Lite')
+
+  const fabricFull = await server('fabric-full', {
+    'mods/FabricProxy-2.0.0.jar': 'x',
+    'config/FabricProxy/config.toml': 'secret = "abc"\n'
+  })
+  check('完整版 FabricProxy 可以接 Bungee', (await probeProxyReady(fabricFull, 'fabric', 'bungee')).ready, true)
+
   console.log('\n══ 什么都没装的 Fabric ══')
   const bare = await server('bare', { 'mods/sodium.jar': 'x' })
   check('不算后端', (await probeProxyReady(bare, 'fabric')).ready, false)
@@ -94,6 +105,8 @@ async function main(): Promise<void> {
     'config/paper-global.yml': 'proxies:\n  velocity:\n    enabled: false\n'
   })
   check('不算后端', (await probeProxyReady(paperOff, 'paper')).ready, false)
+  // 开了原生 Velocity 转发，但接的是 Bungee：这条转发对 Bungee 无效
+  check('Paper 原生转发不能当 Bungee 后端', (await probeProxyReady(paper, 'paper', 'bungee')).ready, false)
 
   console.log('\n══ Paper + BungeeCord 传统转发 ══')
   const bungee = await server('bungee', {
@@ -101,6 +114,7 @@ async function main(): Promise<void> {
   })
   check('算后端', (await probeProxyReady(bungee, 'paper')).ready, true)
   check('说明是 BungeeCord', (await probeProxyReady(bungee, 'paper')).via, 'BungeeCord 转发')
+  check('Bungee 代理下同样算后端', (await probeProxyReady(bungee, 'paper', 'bungee')).ready, true)
 
   console.log('\n══ 有 mods 目录但没装转发模组 ══')
   const modsNoFw = await server('mods-no-fw', { 'mods/lithium.jar': 'x', 'config/paper-global.yml': 'proxies:\n' })

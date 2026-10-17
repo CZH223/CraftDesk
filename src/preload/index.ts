@@ -29,8 +29,11 @@ import type {
   ServerRuntime,
   ServerStatus,
   ServerView,
+  MapPlayerPosition,
+  MapTileResult,
   Topology,
   VelocityFile,
+  WorldMapInfo,
   VelocityUpdate
 } from '../shared/types'
 
@@ -111,6 +114,9 @@ const api = {
       ipcRenderer.invoke('servers:delete', id, mode, confirmName),
     reorder: (ids: string[]): Promise<IpcResult<boolean>> =>
       ipcRenderer.invoke('servers:reorder', ids),
+    /** 每台服务器监听的端口（服务端读 server.properties，代理端读它自己的配置） */
+    ports: (): Promise<IpcResult<Record<string, number | null>>> =>
+      ipcRenderer.invoke('servers:ports'),
     create: (req: CreateServerRequest): Promise<IpcResult<ServerView>> =>
       ipcRenderer.invoke('server:create', req)
   },
@@ -183,6 +189,12 @@ const api = {
 
   players: {
     list: (id: string): Promise<IpcResult<PlayerRecord[]>> => ipcRenderer.invoke('players:list', id),
+    /** 玩家头像（data URL），取不到时为 null，界面用首字母占位 */
+    avatars: (
+      id: string,
+      players: { name: string; uuid?: string }[]
+    ): Promise<IpcResult<Record<string, string | null>>> =>
+      ipcRenderer.invoke('players:avatars', id, players),
     setOp: (id: string, name: string, value: boolean): Promise<IpcResult<boolean>> =>
       ipcRenderer.invoke('players:setOp', id, name, value),
     setWhitelist: (id: string, name: string, value: boolean): Promise<IpcResult<boolean>> =>
@@ -213,6 +225,24 @@ const api = {
   /** 网络拓扑：代理端与后端的从属关系 */
   topology: {
     get: (): Promise<IpcResult<Topology>> => ipcRenderer.invoke('topology:get')
+  },
+
+  /** 世界地图：区块地表的俯视图，按 region 分块渲染 */
+  map: {
+    info: (id: string): Promise<IpcResult<WorldMapInfo>> => ipcRenderer.invoke('map:info', id),
+    tile: (id: string, dim: string, rx: number, rz: number): Promise<IpcResult<MapTileResult>> =>
+      ipcRenderer.invoke('map:tile', id, dim, rx, rz),
+    height: (id: string, dim: string, x: number, z: number): Promise<IpcResult<number | null>> =>
+      ipcRenderer.invoke('map:height', id, dim, x, z),
+    /** 在线玩家位置（仅 CraftDesk 启动的服务端可读） */
+    players: (id: string): Promise<IpcResult<MapPlayerPosition[]>> =>
+      ipcRenderer.invoke('map:players', id),
+    /** 写入 enable-rcon=true（需要重启服务端才生效） */
+    enableRcon: (
+      id: string
+    ): Promise<IpcResult<{ port: number; generatedPassword: boolean }>> =>
+      ipcRenderer.invoke('map:enableRcon', id),
+    clear: (id: string): Promise<IpcResult<boolean>> => ipcRenderer.invoke('map:clear', id)
   },
 
   /** 扩展下载源：Modrinth / Hangar / SpigotMC / CurseForge / MCDReforged */
@@ -247,20 +277,25 @@ const api = {
       ipcRenderer.invoke('registry:install', req)
   },
 
-  /** 代理端 velocity.toml 的读写与后端校验 */
-  velocity: {
+  /**
+   * 代理端配置的读写与后端校验。
+   *
+   * 三种代理端两种格式：Velocity 是 velocity.toml，BungeeCord / Waterfall 是 config.yml。
+   * 主进程按服务器类型自动分流，界面不用关心格式。
+   */
+  proxy: {
     read: (id: string): Promise<IpcResult<VelocityFile>> =>
-      ipcRenderer.invoke('velocity:read', id),
+      ipcRenderer.invoke('proxy:read', id),
     write: (id: string, updates: VelocityUpdate[]): Promise<IpcResult<boolean>> =>
-      ipcRenderer.invoke('velocity:write', id, updates),
+      ipcRenderer.invoke('proxy:write', id, updates),
     writeServers: (
       id: string,
       servers: { name: string; address: string }[],
       tryList: string[]
     ): Promise<IpcResult<boolean>> =>
-      ipcRenderer.invoke('velocity:writeServers', id, servers, tryList),
+      ipcRenderer.invoke('proxy:writeServers', id, servers, tryList),
     checkBackends: (id: string): Promise<IpcResult<BackendCheck[]>> =>
-      ipcRenderer.invoke('velocity:checkBackends', id)
+      ipcRenderer.invoke('proxy:checkBackends', id)
   },
 
   backups: {

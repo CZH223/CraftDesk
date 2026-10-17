@@ -4,7 +4,7 @@ import { Field, Switch, Spinner } from '../components/ui'
 import { DeleteServerDialog } from '../components/DeleteServerDialog'
 import { ServerAvatar } from '../components/ServerAvatar'
 import { ServerIconDialog } from '../components/ServerIconDialog'
-import { VelocityView } from './VelocityView'
+import { ProxyView } from './ProxyView'
 import { useStore } from '../store'
 import { kindLabel } from '../utils'
 import {
@@ -63,7 +63,7 @@ export function PropertiesView({ server }: { server: ServerView }): JSX.Element 
         {tab === 'launch' ? (
           <LaunchForm server={server} layout={layout} />
         ) : isProxy ? (
-          <VelocityView server={server} />
+          <ProxyView server={server} />
         ) : (
           <PropsForm server={server} />
         )}

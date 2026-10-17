@@ -41,6 +41,7 @@ import { importIcon, readIcon, removeIcon, removeOtherIcons } from './icons'
 import { parseIcon } from '../shared/serverIcon'
 import { parsePropertiesFile, writeProperties } from './properties'
 import { listPlayers, setBanned, setOp, setWhitelist } from './players'
+import { getAvatars } from './avatars'
 import { listPlugins, resolveExtensionFile, togglePlugin } from './plugins'
 import { createBackup, deleteBackup, listBackups, restoreBackup } from './backups'
 import { downloadFile, installServer, listVersions } from './downloader'
@@ -66,9 +67,12 @@ import { detectPython, installMcdr, mcdrReady, probePython } from './python'
 import { initMcdrEnvironment, writeMcdrConfig, writeMcdrStartScript } from './mcdr'
 import { trashDirectory, whyNotDeletable } from './removal'
 import { listConfigs } from './configs'
-import { readVelocityFile, writeVelocityFile, writeVelocityServers } from './velocity'
+import { readProxyFile, writeProxyFields, writeProxyServers } from './proxyConfig'
 import { checkBackends } from './backends'
 import { buildTopology } from './topology'
+import { clearMapCache, getMapHeight, getMapInfo, getMapTile } from './mapService'
+import { getPlayerPositions } from './positions'
+import { withRconEnabled } from './rcon'
 import type {
   BackendCheck,
   ConfigFile,
@@ -80,8 +84,11 @@ import type {
   RegistryHit,
   RegistryVersion,
   ServerDeleteMode,
+  MapPlayerPosition,
+  MapTileResult,
   Topology,
   VelocityFile,
+  WorldMapInfo,
   VelocityUpdate
 } from '../shared/types'
 
@@ -271,6 +278,92 @@ export function registerIpc(ctx: Ctx): void {
     }
   })
 
+  // ---------------------------------------------------------- 世界地图
+
+  /*
+   * 地图是只读的：只解析 world/region 里的方块数据，不碰存档。
+   * 渲染结果按 region 缓存在 userData/worldmap 下，存档更新后文件名会变。
+   */
+  ipcMain.handle('map:info', async (_e, id: string) => {
+    try {
+      const cfg = store.getServer(id)
+      if (!cfg) throw new Error('服务器不存在')
+      const layout = await resolveLayout(cfg)
+      return ok<WorldMapInfo>(await getMapInfo(cfg, layout.core, layout.serverProperties))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  ipcMain.handle('map:tile', async (_e, id: string, dim: string, rx: number, rz: number) => {
+    try {
+      const cfg = store.getServer(id)
+      if (!cfg) throw new Error('服务器不存在')
+      const layout = await resolveLayout(cfg)
+      const info = await getMapInfo(cfg, layout.core, layout.serverProperties)
+      return ok<MapTileResult>(await getMapTile(cfg, dim, rx, rz, info))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  ipcMain.handle('map:height', async (_e, id: string, dim: string, x: number, z: number) => {
+    try {
+      const cfg = store.getServer(id)
+      if (!cfg) throw new Error('服务器不存在')
+      const layout = await resolveLayout(cfg)
+      const info = await getMapInfo(cfg, layout.core, layout.serverProperties)
+      return ok<number | null>(await getMapHeight(cfg, dim, x, z, info))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  /**
+   * 在线玩家坐标。走控制台的 `data get entity`，只在地图打开时轮询。
+   * 返回的名单按当前服务端的在线列表来；外部启动的服务端拿不到 stdin。
+   */
+  ipcMain.handle('map:players', async (_e, id: string) => {
+    try {
+      const cfg = store.getServer(id)
+      if (!cfg) throw new Error('服务器不存在')
+      const layout = await resolveLayout(cfg)
+      return ok<MapPlayerPosition[]>(
+        await getPlayerPositions(manager, cfg, layout.playersDir, layout.serverProperties)
+      )
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  /**
+   * 给一台 MCDR / 外部启动的服务端打开 RCON。
+   * 只改 server.properties，不重启服务器；玩家位置要等服务端下次启动后才读得到。
+   */
+  ipcMain.handle('map:enableRcon', async (_e, id: string) => {
+    try {
+      const cfg = store.getServer(id)
+      if (!cfg) throw new Error('服务器不存在')
+      const layout = await resolveLayout(cfg)
+      const entries = await parsePropertiesFile(layout.serverProperties)
+      if (!entries.length) throw new Error('读不到 server.properties')
+      const res = withRconEnabled(entries)
+      await writeProperties(layout.serverProperties, res.entries)
+      return ok({ port: res.port, generatedPassword: res.generatedPassword })
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  ipcMain.handle('map:clear', async (_e, id: string) => {
+    try {
+      await clearMapCache(id)
+      return ok(true)
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
   // ---------------------------------------------------------- 扩展下载源
 
   /** 统一的搜索入口，source 决定去哪个站查 */
@@ -420,23 +513,25 @@ export function registerIpc(ctx: Ctx): void {
     }
   })
 
-  // ---------------------------------------------------------- 代理端（Velocity）
+  // ---------------------------------------------------------- 代理端（Velocity / BungeeCord / Waterfall）
 
-  ipcMain.handle('velocity:read', async (_e, id: string) => {
+  ipcMain.handle('proxy:read', async (_e, id: string) => {
     try {
       const cfg = store.getServer(id)
       if (!cfg) throw new Error('服务器不存在')
-      return ok<VelocityFile>(await readVelocityFile(cfg.dir))
+      if (!isProxyKind(cfg.kind)) throw new Error('这台服务器不是代理端')
+      return ok<VelocityFile>(await readProxyFile(cfg))
     } catch (err) {
       return fail(err)
     }
   })
 
-  ipcMain.handle('velocity:write', async (_e, id: string, updates: VelocityUpdate[]) => {
+  ipcMain.handle('proxy:write', async (_e, id: string, updates: VelocityUpdate[]) => {
     try {
       const cfg = store.getServer(id)
       if (!cfg) throw new Error('服务器不存在')
-      await writeVelocityFile(cfg.dir, updates)
+      if (!isProxyKind(cfg.kind)) throw new Error('这台服务器不是代理端')
+      await writeProxyFields(cfg, updates)
       return ok(true)
     } catch (err) {
       return fail(err)
@@ -444,7 +539,7 @@ export function registerIpc(ctx: Ctx): void {
   })
 
   ipcMain.handle(
-    'velocity:writeServers',
+    'proxy:writeServers',
     async (
       _e,
       id: string,
@@ -454,7 +549,8 @@ export function registerIpc(ctx: Ctx): void {
       try {
         const cfg = store.getServer(id)
         if (!cfg) throw new Error('服务器不存在')
-        await writeVelocityServers(cfg.dir, servers, tryList)
+        if (!isProxyKind(cfg.kind)) throw new Error('这台服务器不是代理端')
+        await writeProxyServers(cfg, servers, tryList)
         return ok(true)
       } catch (err) {
         return fail(err)
@@ -466,23 +562,35 @@ export function registerIpc(ctx: Ctx): void {
    * 检查 [servers] 里的每个后端：
    * 能不能在 CraftDesk 里对上号、有没有装 FabricProxy/FabricProxy-Lite、密钥与转发模式对不对。
    */
-  ipcMain.handle('velocity:checkBackends', async (_e, id: string) => {
+  ipcMain.handle('proxy:checkBackends', async (_e, id: string) => {
     try {
       const cfg = store.getServer(id)
       if (!cfg) throw new Error('服务器不存在')
+      if (!isProxyKind(cfg.kind)) throw new Error('这台服务器不是代理端')
 
-      const file = await readVelocityFile(cfg.dir)
+      const file = await readProxyFile(cfg)
       const field = (key: string): string =>
         file.fields.find((f) => f.section === '' && f.key === key)?.value ?? ''
-
       const runningIds = new Set(
         store.servers.filter((s) => manager.isRunning(s.id)).map((s) => s.id)
       )
 
+      // BungeeCord 没有 forwarding secret：它靠 ip_forward 在握手里带玩家信息，
+      // 也就是 Velocity 所说的 legacy 模式。关掉就等于不转发。
+      const forwardingMode =
+        file.format === 'bungee'
+          ? field('ip_forward') === 'true'
+            ? 'legacy'
+            : 'none'
+          : field('player-info-forwarding-mode') || 'none'
+      const proxyOnlineMode =
+        (file.format === 'bungee' ? field('online_mode') : field('online-mode')) === 'true'
+
       const checks = await checkBackends({
         proxySecret: file.secret,
-        forwardingMode: field('player-info-forwarding-mode') || 'none',
-        proxyOnlineMode: field('online-mode') === 'true',
+        forwardingMode,
+        proxyOnlineMode,
+        proxyFormat: file.format === 'bungee' ? 'bungee' : 'velocity',
         entries: file.servers,
         managed: store.servers,
         runningIds
@@ -554,6 +662,36 @@ export function registerIpc(ctx: Ctx): void {
       }
     }
   )
+
+  /**
+   * 每台服务器监听哪个端口。
+   *
+   * 「把一台已导入的服务器接到代理端」需要它的端口：服务端在 server.properties 里，
+   * 代理端在自己的配置里。这里一次读完，界面上的「添加后端」就不用让用户去翻文件。
+   */
+  ipcMain.handle('servers:ports', async () => {
+    const out: Record<string, number | null> = {}
+    for (const cfg of store.servers) {
+      try {
+        if (isProxyKind(cfg.kind)) {
+          const file = await readProxyFile(cfg)
+          const listen = file.format === 'bungee'
+            ? file.fields.find((f) => f.section === 'listener' && f.key === 'host')?.value ?? ''
+            : file.fields.find((f) => f.section === '' && f.key === 'bind')?.value ?? ''
+          const port = Number(listen.split(':').pop())
+          out[cfg.id] = Number.isFinite(port) && port > 0 ? port : null
+          continue
+        }
+        const layout = await resolveLayout(cfg)
+        const props = await parsePropertiesFile(layout.serverProperties)
+        const port = Number(props.find((p) => p.key === 'server-port')?.value)
+        out[cfg.id] = Number.isFinite(port) && port > 0 ? port : null
+      } catch {
+        out[cfg.id] = null
+      }
+    }
+    return ok(out)
+  })
 
   ipcMain.handle('servers:reorder', (_e, ids: string[]) => {
     store.reorder(ids)
@@ -901,6 +1039,23 @@ export function registerIpc(ctx: Ctx): void {
       return fail(err)
     }
   })
+
+  /**
+   * 头像按「名字 + UUID」缓存在 userData/avatars，7 天才重新拉。
+   * 界面把当前玩家列表传上来，主进程只做校验、下载与缓存。
+   */
+  ipcMain.handle(
+    'players:avatars',
+    async (_e, id: string, players: { name: string; uuid?: string }[]) => {
+      try {
+        if (!store.getServer(id)) throw new Error('服务器不存在')
+        if (!Array.isArray(players)) throw new Error('玩家列表格式不正确')
+        return ok<Record<string, string | null>>(await getAvatars(players))
+      } catch (err) {
+        return fail(err)
+      }
+    }
+  )
 
   ipcMain.handle('players:setOp', async (_e, id: string, name: string, value: boolean) => {
     try {

@@ -11,6 +11,7 @@ import { ConsoleView } from './views/ConsoleView'
 import { DashboardView } from './views/DashboardView'
 import { PropertiesView } from './views/PropertiesView'
 import { RegistryView } from './views/RegistryView'
+import { MapView } from './views/MapView'
 import { TopologyView } from './views/TopologyView'
 import { SettingsView } from './views/SettingsView'
 import { RightPanel } from './panels/RightPanel'
@@ -285,12 +286,18 @@ export function App(): JSX.Element {
             <PropertiesView server={active} />
           ) : view === 'registry' ? (
             <RegistryView server={active} />
+          ) : view === 'map' ? (
+            <MapView server={active} />
           ) : (
             <ConsoleView server={active} />
           )}
         </div>
 
-        {active && panelOpen && view !== 'dashboard' && view !== 'topology' && (
+        {active &&
+          panelOpen &&
+          view !== 'dashboard' &&
+          view !== 'topology' &&
+          view !== 'map' && (
           <>
             <div
               className={`resizer resizer-panel ${dragKind === 'panel' ? 'active' : ''}`}

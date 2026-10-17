@@ -13,7 +13,7 @@ import { run } from './java'
 import { UTF8_CONSOLE_FLAGS } from '../shared/jvmArgs'
 import { resolveLayout, resolveServerPort } from './layout'
 import { fileLockInfo } from './files'
-import { readVelocityFile } from './velocity'
+import { readProxyFile } from './proxyConfig'
 import { isProxyKind } from '../shared/types'
 import { looksLikePlayerNames, pingServer, type PingResult } from './ping'
 import type { Store } from './store'
@@ -368,12 +368,14 @@ export class ServerManager {
     // 代理端没有 max-players 这个概念，玩家看到的上限是 velocity.toml 的 show-max-players
     if (isProxy) {
       try {
-        const vf = await readVelocityFile(cfg.dir)
-        const raw = vf.fields.find(
-          (f) => f.section === '' && f.key === 'show-max-players'
-        )?.value
-        const n = raw ? Number(raw) : NaN
-        if (Number.isFinite(n) && n > 0) p.maxPlayers = n
+        const vf = await readProxyFile(cfg)
+        if (vf.format !== 'bungee') {
+          const raw = vf.fields.find(
+            (f) => f.section === '' && f.key === 'show-max-players'
+          )?.value
+          const n = raw ? Number(raw) : NaN
+          if (Number.isFinite(n) && n > 0) p.maxPlayers = n
+        }
       } catch {
         /* 读不到就保持原值 */
       }
@@ -546,7 +548,7 @@ export class ServerManager {
     const p = this.ensure(id)
     if (!cfg || p.backendPorts) return
     try {
-      const vf = await readVelocityFile(cfg.dir)
+      const vf = await readProxyFile(cfg)
       p.backendPorts = vf.servers
         .map((x) => x.port)
         .filter((n): n is number => Number.isFinite(n) && n > 0)
@@ -642,17 +644,20 @@ export class ServerManager {
     }
   }
 
-  sendCommand(id: string, cmd: string): boolean {
+  sendCommand(id: string, cmd: string, quiet = false): boolean {
     const p = this.ensure(id)
     if (!p.child || p.status === 'stopped' || p.status === 'crashed') return false
     try {
       p.child.stdin.write(cmd.endsWith('\n') ? cmd : `${cmd}\n`)
-      this.pushLog(id, {
-        t: Date.now(),
-        level: 'system',
-        text: `> ${cmd}`,
-        raw: `> ${cmd}`
-      })
+      // 地图位置轮询每几秒就发两条只读指令，没必要在控制台里刷一遍命令回显
+      if (!quiet) {
+        this.pushLog(id, {
+          t: Date.now(),
+          level: 'system',
+          text: `> ${cmd}`,
+          raw: `> ${cmd}`
+        })
+      }
       return true
     } catch {
       return false

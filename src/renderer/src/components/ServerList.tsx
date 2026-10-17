@@ -295,6 +295,14 @@ function ServerRow({
             label={isProxyKind(server.kind) ? '跨服配置' : '服务器属性'}
             onClick={() => onOpenView('properties')}
           />
+          {!isProxyKind(server.kind) && (
+            <SubItem
+              active={view === 'map'}
+              icon="map"
+              label="世界地图"
+              onClick={() => onOpenView('map')}
+            />
+          )}
         </div>
       )}
     </>
@@ -408,6 +416,14 @@ function BackendRow({
             label="服务器属性"
             onClick={() => onOpenView('properties')}
           />
+          {server && !isProxyKind(server.kind) && (
+            <SubItem
+              active={view === 'map'}
+              icon="map"
+              label="世界地图"
+              onClick={() => onOpenView('map')}
+            />
+          )}
         </div>
       )}
     </div>
