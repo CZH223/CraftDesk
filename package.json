@@ -2,10 +2,29 @@
   "name": "craftdesk",
   "productName": "CraftDesk",
   "version": "1.0.0",
-  "description": "Minecraft 多服务器管理器",
+  "description": "Minecraft 多服务器管理器（Windows 桌面端）",
   "main": "./out/main/index.js",
   "author": "CraftDesk",
   "license": "MIT",
+  "homepage": "https://github.com/CZH223/CraftDesk#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CZH223/CraftDesk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/CZH223/CraftDesk/issues"
+  },
+  "keywords": [
+    "minecraft",
+    "server",
+    "manager",
+    "electron",
+    "mcdreforged",
+    "velocity",
+    "bungeecord",
+    "forge",
+    "fabric"
+  ],
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
