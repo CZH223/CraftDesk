@@ -12,6 +12,7 @@ import type {
   FileEntry,
   IpcResult,
   JavaInfo,
+  MapOverview,
   PlayerRecord,
   PluginInfo,
   PropertiesEntry,
@@ -42,7 +43,12 @@ import { parseIcon } from '../shared/serverIcon'
 import { parsePropertiesFile, writeProperties } from './properties'
 import { listPlayers, setBanned, setOp, setWhitelist } from './players'
 import { getAvatars } from './avatars'
-import { listPlugins, resolveExtensionFile, togglePlugin } from './plugins'
+import {
+  listPlugins,
+  resolveExtensionFile,
+  setPluginsEnabled,
+  togglePlugin
+} from './plugins'
 import { createBackup, deleteBackup, listBackups, restoreBackup } from './backups'
 import { downloadFile, installServer, listVersions } from './downloader'
 import {
@@ -68,9 +74,16 @@ import { initMcdrEnvironment, writeMcdrConfig, writeMcdrStartScript } from './mc
 import { trashDirectory, whyNotDeletable } from './removal'
 import { listConfigs } from './configs'
 import { readProxyFile, writeProxyFields, writeProxyServers } from './proxyConfig'
+import { findJoinedNetwork, joinServerToNetwork, leaveNetwork } from './networkJoin'
 import { checkBackends } from './backends'
 import { buildTopology } from './topology'
-import { clearMapCache, getMapHeight, getMapInfo, getMapTile } from './mapService'
+import {
+  clearMapCache,
+  getMapHeight,
+  getMapInfo,
+  getMapOverview,
+  getMapTile
+} from './mapService'
 import { getPlayerPositions } from './positions'
 import { withRconEnabled } from './rcon'
 import type {
@@ -191,7 +204,9 @@ export function registerIpc(ctx: Ctx): void {
         pythonPath: payload.config.pythonPath || (detected.isMcdr ? store.settings.pythonPath : ''),
         note: payload.config.note || '',
         icon: payload.config.icon || kindLabel(payload.config.kind ?? detected.kind),
-        color: kindColor(payload.config.kind ?? detected.kind)
+        color: kindColor(payload.config.kind ?? detected.kind),
+        networkId: payload.config.networkId || '',
+        networkAlias: payload.config.networkAlias || ''
       })
       store.addServer(cfg)
 
@@ -295,13 +310,29 @@ export function registerIpc(ctx: Ctx): void {
     }
   })
 
-  ipcMain.handle('map:tile', async (_e, id: string, dim: string, rx: number, rz: number) => {
+  ipcMain.handle(
+    'map:tile',
+    async (_e, id: string, dim: string, rx: number, rz: number, step?: number) => {
+      try {
+        const cfg = store.getServer(id)
+        if (!cfg) throw new Error('服务器不存在')
+        const layout = await resolveLayout(cfg)
+        const info = await getMapInfo(cfg, layout.core, layout.serverProperties)
+        return ok<MapTileResult>(await getMapTile(cfg, dim, rx, rz, info, step ?? 1))
+      } catch (err) {
+        return fail(err)
+      }
+    }
+  )
+
+  /** 一像素一 region 的世界总览 */
+  ipcMain.handle('map:overview', async (_e, id: string, dim: string) => {
     try {
       const cfg = store.getServer(id)
       if (!cfg) throw new Error('服务器不存在')
       const layout = await resolveLayout(cfg)
       const info = await getMapInfo(cfg, layout.core, layout.serverProperties)
-      return ok<MapTileResult>(await getMapTile(cfg, dim, rx, rz, info))
+      return ok<MapOverview>(await getMapOverview(cfg, dim, info))
     } catch (err) {
       return fail(err)
     }
@@ -533,6 +564,120 @@ export function registerIpc(ctx: Ctx): void {
       if (!isProxyKind(cfg.kind)) throw new Error('这台服务器不是代理端')
       await writeProxyFields(cfg, updates)
       return ok(true)
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  /**
+   * 把一台服务端接入代理端：写 servers、开代理端转发、配置后端。
+   * 换网络时先把旧的条目摘掉，避免同一台服务器挂在两个代理端下面。
+   */
+  ipcMain.handle('network:join', async (_e, id: string, proxyId: string) => {
+    try {
+      const cfg = store.getServer(id)
+      const proxy = store.getServer(proxyId)
+      if (!cfg) throw new Error('服务器不存在')
+      if (!proxy) throw new Error('代理端不存在')
+      if (cfg.id === proxy.id) throw new Error('服务器不能加入自己')
+
+      if (cfg.networkId && cfg.networkId !== proxy.id) {
+        const old = store.getServer(cfg.networkId)
+        if (old) {
+          try {
+            await leaveNetwork(cfg, old)
+          } catch {
+            /* 旧代理端已经删掉或配置读不出来时，继续接入新网络 */
+          }
+        }
+      }
+
+      const taskId = `network-${Date.now()}`
+      const result = await joinServerToNetwork(
+        cfg,
+        proxy,
+        (message, received, total) => {
+          send('download:progress', {
+            taskId,
+            stage: 'download',
+            message,
+            received,
+            total,
+            percent: total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0
+          })
+        },
+        store.servers,
+        {
+          javaPath: cfg.javaPath || store.settings.javaPath,
+          running: manager.isRunning(cfg.id)
+        }
+      )
+      send('download:progress', {
+        taskId,
+        stage: 'done',
+        message: '跨服接入完成',
+        received: 0,
+        total: 0,
+        percent: 100
+      })
+
+      store.updateServer(cfg.id, {
+        networkId: proxy.id,
+        networkAlias: result.alias,
+        // 导入时按 mod 文件名猜的版本可能不准，用实际检测到的覆盖掉
+        ...(result.mcVersion ? { mcVersion: result.mcVersion } : {})
+      })
+      send('servers:changed')
+      return ok(result)
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  /**
+   * 查询这台服务器现在挂在哪个代理端下面。
+   * 旧版本导入的网络没记 networkId，按端口扫配置也能认出来。
+   */
+  ipcMain.handle('network:status', async (_e, id: string) => {
+    try {
+      const cfg = store.getServer(id)
+      if (!cfg) throw new Error('服务器不存在')
+      const found = await findJoinedNetwork(cfg, store.servers)
+      if (found) {
+        store.updateServer(cfg.id, {
+          networkId: found.proxy.id,
+          networkAlias: found.alias
+        })
+        // 让左侧列表立刻出现「网络」标记
+        send('servers:changed')
+        return ok({ proxyId: found.proxy.id, alias: found.alias })
+      }
+      if (cfg.networkId) {
+        store.updateServer(cfg.id, { networkId: '', networkAlias: '' })
+        send('servers:changed')
+      }
+      return ok(null)
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  ipcMain.handle('network:leave', async (_e, id: string) => {
+    try {
+      const cfg = store.getServer(id)
+      if (!cfg) throw new Error('服务器不存在')
+
+      let proxy = cfg.networkId ? store.getServer(cfg.networkId) : undefined
+      if (!proxy) {
+        const found = await findJoinedNetwork(cfg, store.servers)
+        proxy = found?.proxy
+      }
+      if (!proxy) throw new Error('这台服务器没有写在任何代理端的服务器列表里')
+
+      const result = await leaveNetwork(cfg, proxy)
+      store.updateServer(cfg.id, { networkId: '', networkAlias: '' })
+      send('servers:changed')
+      return ok(result)
     } catch (err) {
       return fail(err)
     }
@@ -1127,6 +1272,20 @@ export function registerIpc(ctx: Ctx): void {
     }
   })
 
+  /** 批量启用 / 禁用（多选、全选、一键切换都走这里） */
+  ipcMain.handle(
+    'plugins:setEnabled',
+    async (_e, id: string, relPaths: string[], enabled: boolean) => {
+      try {
+        const cfg = store.getServer(id)
+        if (!cfg) throw new Error('服务器不存在')
+        return ok(await setPluginsEnabled(cfg.dir, relPaths, enabled))
+      } catch (err) {
+        return fail(err)
+      }
+    }
+  )
+
   /**
    * 删除一个模组 / 插件文件。
    *
@@ -1271,7 +1430,7 @@ export function registerIpc(ctx: Ctx): void {
           port: req.port,
           maxPlayers: 20,
           acceptEula: req.acceptEula,
-          onlineMode: true,
+          onlineMode: req.onlineMode ?? true,
           build: req.build,
           // Forge / NeoForge 的安装器本身也是个 Java 程序，得用能跑它的那个
           javaPath: store.settings.javaPath

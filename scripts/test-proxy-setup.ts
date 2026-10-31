@@ -13,7 +13,7 @@
  * npx esbuild scripts/test-proxy-setup.ts --bundle --platform=node --format=cjs \
  *   --outfile=tmp/test-proxy-setup.cjs && node tmp/test-proxy-setup.cjs
  */
-import { existsSync } from 'node:fs'
+import { existsSync, promises as fs } from 'node:fs'
 import { join, resolve } from 'node:path'
 import {
   bungeeConfigYaml,
@@ -22,7 +22,7 @@ import {
   proxyConfigName,
   proxyConfigText
 } from '../src/main/proxySetup'
-import { parseVelocityToml } from '../src/main/velocity'
+import { parseVelocityToml, writeVelocityServers } from '../src/main/velocity'
 import { parseBungeeServers } from '../src/main/network'
 import { ZipReader } from '../src/main/zip'
 import { handlerFor } from '../src/main/mcdr'
@@ -186,7 +186,39 @@ async function checkOfficialTemplate(): Promise<void> {
   }
 }
 
-void checkOfficialTemplate().then(() => {
-  console.log(`\n通过 ${pass}，失败 ${fail}`)
-  process.exit(fail ? 1 : 0)
-})
+/** 写回 [servers] / try 后，生成的 TOML 必须能被 Velocity 解析 */
+async function checkTryArrayWriter(): Promise<void> {
+  const dir = join(resolve('.'), 'tmp', 'test-velocity-writer')
+  await fs.rm(dir, { recursive: true, force: true })
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(join(dir, 'velocity.toml'), TEMPLATE, 'utf-8')
+  await writeVelocityServers(
+    dir,
+    [
+      { name: 'lobby', address: '127.0.0.1:25570' },
+      { name: 'parkour', address: '127.0.0.1:25571' }
+    ],
+    ['lobby', 'parkour']
+  )
+  const written = await fs.readFile(join(dir, 'velocity.toml'), 'utf-8')
+  const start = written.indexOf('try = [')
+  const tryBlock = written.slice(start, written.indexOf(']', start) + 1)
+
+  console.log('\n写回 [servers]（TOML 数组语法）：')
+  check(
+    'try 数组的每个元素都有逗号',
+    tryBlock.includes('"lobby",') && tryBlock.includes('"parkour",'),
+    tryBlock.replace(/\n/g, ' ')
+  )
+  check(
+    '写回后仍能解析出 try 列表',
+    JSON.stringify(parseVelocityToml(written).tryList) === '["lobby","parkour"]'
+  )
+}
+
+void checkOfficialTemplate()
+  .then(checkTryArrayWriter)
+  .then(() => {
+    console.log(`\n通过 ${pass}，失败 ${fail}`)
+    process.exit(fail ? 1 : 0)
+  })

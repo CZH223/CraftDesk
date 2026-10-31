@@ -12,6 +12,7 @@ import { Confirm } from '../components/ui'
 import { useStore } from '../store'
 import type {
   MapDimensionInfo,
+  MapOverview,
   MapPlayerPosition,
   MapRegionRef,
   ServerView,
@@ -30,14 +31,28 @@ import type {
  */
 
 const REGION = 512
-const MIN_SCALE = 0.03
+const MIN_SCALE = 0.0015
 const MAX_SCALE = 4
 const MAX_LOAD = 64
 const MAX_DRAW = 220
 const TILE_CACHE = 120
+/** 一个 region 在屏幕上小于这个像素数时，改画「一个 region 一个像素」的总览 */
+const OVERVIEW_PX = 10
 
 const clamp = (v: number, min: number, max: number): number => Math.min(max, Math.max(min, v))
-const keyOf = (dim: string, r: MapRegionRef): string => `${dim}:${r.rx}:${r.rz}`
+const keyOf = (dim: string, r: MapRegionRef, step: number): string =>
+  `${dim}:${r.rx}:${r.rz}:${step}`
+
+/**
+ * 缩放级别 → 瓦片分辨率。
+ * 放大时 1 像素 1 格；缩小时按 2×2 / 3×3 / 4×4 格合并。
+ */
+function stepForScale(scale: number): number {
+  if (scale >= 1) return 1
+  if (scale >= 1 / 2) return 2
+  if (scale >= 1 / 3) return 3
+  return 4
+}
 
 interface Hover {
   x: number
@@ -63,8 +78,13 @@ export function MapView({ server }: { server: ServerView }): JSX.Element {
   const [playerAvatars, setPlayerAvatars] = useState<Record<string, string | null>>({})
   const [liveCount, setLiveCount] = useState(0)
   const [rconAsk, setRconAsk] = useState(false)
+  const [overviews, setOverviews] = useState<Record<string, MapOverview>>({})
+  const [overviewBusy, setOverviewBusy] = useState(false)
+  const [jumpX, setJumpX] = useState('')
+  const [jumpZ, setJumpZ] = useState('')
   const toast = useStore((s) => s.toast)
 
+  const overviewTried = useRef(new Set<string>())
   const loadingRef = useRef(new Set<string>())
   const failedRef = useRef(new Set<string>())
   const visibleKeysRef = useRef(new Set<string>())
@@ -88,6 +108,8 @@ export function MapView({ server }: { server: ServerView }): JSX.Element {
       setInfo(data)
       setTiles(new Map())
       setFailed(new Set())
+      setOverviews({})
+      overviewTried.current.clear()
       loadingRef.current.clear()
       failedRef.current.clear()
       if (data.exists) {
@@ -136,6 +158,9 @@ export function MapView({ server }: { server: ServerView }): JSX.Element {
     }
   }, [info, dimId])
 
+  const step = stepForScale(scale)
+  const overviewMode = Boolean(dim) && REGION * scale < OVERVIEW_PX
+
   // 视口里能看到的方块范围
   const left = center.x - size.w / 2 / scale
   const top = center.z - size.h / 2 / scale
@@ -160,13 +185,13 @@ export function MapView({ server }: { server: ServerView }): JSX.Element {
 
   // ---- 按需拉取视口里的瓦片；同一块最多同时请求一次
   useEffect(() => {
-    if (!dim || !visible.length) return
-    visibleKeysRef.current = new Set(visible.map((r) => keyOf(dim.id, r)))
+    if (!dim || overviewMode || !visible.length) return
+    visibleKeysRef.current = new Set(visible.map((r) => keyOf(dim.id, r, step)))
 
     const needed = visible
       .slice(0, MAX_LOAD)
       .filter((r) => {
-        const k = keyOf(dim.id, r)
+        const k = keyOf(dim.id, r, step)
         return !tiles.has(k) && !loadingRef.current.has(k) && !failedRef.current.has(k)
       })
     if (!needed.length) return
@@ -179,11 +204,11 @@ export function MapView({ server }: { server: ServerView }): JSX.Element {
         if (!aliveRef.current) return
         if (activeRef.current >= 3) return
         const r = needed[index++]
-        const k = keyOf(dim.id, r)
+        const k = keyOf(dim.id, r, step)
         loadingRef.current.add(k)
         activeRef.current++
         setPending((p) => p + 1)
-        const res = await window.api.map.tile(server.id, dim.id, r.rx, r.rz)
+        const res = await window.api.map.tile(server.id, dim.id, r.rx, r.rz, step)
         loadingRef.current.delete(k)
         activeRef.current--
         if (!aliveRef.current) return
@@ -214,7 +239,23 @@ export function MapView({ server }: { server: ServerView }): JSX.Element {
       }
     }
     void Promise.all([worker(), worker(), worker()])
-  }, [dim, visible, tiles, server.id])
+  }, [dim, visible, tiles, server.id, step, overviewMode])
+
+  // ---- 缩到最小时拉一次「一像素一 region」的总览
+  useEffect(() => {
+    if (!dim || !overviewMode) return
+    if (overviews[dim.id] || overviewTried.current.has(dim.id)) return
+    overviewTried.current.add(dim.id)
+    setOverviewBusy(true)
+    void window.api.map.overview(server.id, dim.id).then((res) => {
+      setOverviewBusy(false)
+      if (!res.ok) {
+        toast(res.error ?? '生成区域总览失败', 'error')
+        return
+      }
+      setOverviews((prev) => ({ ...prev, [dim.id]: res.data! }))
+    })
+  }, [dim, overviewMode, overviews, server.id, toast])
 
   // ---- 在线玩家位置：地图开着时才向服务端轮询，关掉就停
   const serverLive =
@@ -345,8 +386,25 @@ export function MapView({ server }: { server: ServerView }): JSX.Element {
     setCenter({ x: (b.minX + b.maxX) / 2, z: (b.minZ + b.maxZ) / 2 })
   }
 
-  const zoomLabel =
-    scale >= 1 ? `${scale.toFixed(1)}×` : `${(1 / scale).toFixed(1)} 格/px`
+  /** 坐标跳转：把视口中心移到指定方块坐标 */
+  const jumpTo = (): void => {
+    const x = Number(jumpX.trim())
+    const z = Number(jumpZ.trim())
+    if (!Number.isFinite(x) || !Number.isFinite(z)) {
+      toast('请输入有效的 X / Z 坐标', 'error')
+      return
+    }
+    setCenter({ x, z })
+    setHover(null)
+    // 从很远的地方跳过来时放大到能看清方块
+    if (scale < 0.5) setScale(1)
+  }
+
+  const zoomLabel = overviewMode
+    ? '1 px = 1 区域'
+    : step === 1
+      ? `${scale.toFixed(1)}× · 1 px = 1 格`
+      : `1 px ≈ ${step}×${step} 格`
 
   return (
     <div className="map-page">
@@ -370,6 +428,26 @@ export function MapView({ server }: { server: ServerView }): JSX.Element {
           <span>X {hover?.x ?? Math.round(center.x)}</span>
           <span>Z {hover?.z ?? Math.round(center.z)}</span>
           <span>Y {hover?.y ?? '—'}</span>
+        </div>
+
+        <div className="map-jump" title="输入方块坐标并跳转">
+          <input
+            className="input"
+            placeholder="X"
+            value={jumpX}
+            onChange={(e) => setJumpX(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && jumpTo()}
+          />
+          <input
+            className="input"
+            placeholder="Z"
+            value={jumpZ}
+            onChange={(e) => setJumpZ(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && jumpTo()}
+          />
+          <button className="btn sm" onClick={jumpTo}>
+            前往
+          </button>
         </div>
 
         {(serverLive || mapPlayers.length > 0) && (
@@ -472,29 +550,64 @@ export function MapView({ server }: { server: ServerView }): JSX.Element {
           </div>
         ) : (
           <>
-            {visible.slice(0, MAX_DRAW).map((r) => {
-              const k = keyOf(dim.id, r)
-              const src = tiles.get(k)
-              const px = REGION * scale
-              const style: CSSProperties = {
-                left: Math.floor((r.rx * REGION - left) * scale),
-                top: Math.floor((r.rz * REGION - top) * scale),
-                width: Math.ceil(px) + 1,
-                height: Math.ceil(px) + 1
-              }
-              return src ? (
-                <img
-                  key={k}
-                  className="map-tile"
-                  src={src}
-                  alt=""
-                  draggable={false}
-                  style={style}
-                />
-              ) : (
-                <div key={k} className="map-tile map-tile-pending" style={style} />
-              )
-            })}
+            {overviewMode ? (
+              (() => {
+                const ov = overviews[dim.id]
+                if (!ov) {
+                  return (
+                    <div className="map-overview-state">
+                      {overviewBusy ? (
+                        <>
+                          <span className="spin small" />
+                          正在生成区域总览…
+                        </>
+                      ) : (
+                        '这个缩放下没有可显示的区域'
+                      )}
+                    </div>
+                  )
+                }
+                const style: CSSProperties = {
+                  left: Math.floor((ov.minX - left) * scale),
+                  top: Math.floor((ov.minZ - top) * scale),
+                  width: Math.ceil((ov.maxX - ov.minX + 1) * scale) + 1,
+                  height: Math.ceil((ov.maxZ - ov.minZ + 1) * scale) + 1
+                }
+                return (
+                  <img
+                    className="map-tile map-overview"
+                    src={ov.png}
+                    alt=""
+                    draggable={false}
+                    style={style}
+                  />
+                )
+              })()
+            ) : (
+              visible.slice(0, MAX_DRAW).map((r) => {
+                const k = keyOf(dim.id, r, step)
+                const src = tiles.get(k)
+                const px = REGION * scale
+                const style: CSSProperties = {
+                  left: Math.floor((r.rx * REGION - left) * scale),
+                  top: Math.floor((r.rz * REGION - top) * scale),
+                  width: Math.ceil(px) + 1,
+                  height: Math.ceil(px) + 1
+                }
+                return src ? (
+                  <img
+                    key={k}
+                    className="map-tile"
+                    src={src}
+                    alt=""
+                    draggable={false}
+                    style={style}
+                  />
+                ) : (
+                  <div key={k} className="map-tile map-tile-pending" style={style} />
+                )
+              })
+            )}
             {mapPlayers.map((p) => {
               const px = (p.x - left) * scale
               const pz = (p.z - top) * scale
@@ -519,7 +632,7 @@ export function MapView({ server }: { server: ServerView }): JSX.Element {
                 </div>
               )
             })}
-            {visible.length > MAX_DRAW && (
+            {!overviewMode && visible.length > MAX_DRAW && (
               <div className="map-note">
                 这个缩放级别下能看到 {visible.length} 个区域，只绘制最近的 {MAX_DRAW} 个；
                 放大后会显示更多细节。

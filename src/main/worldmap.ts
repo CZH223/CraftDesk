@@ -520,12 +520,116 @@ function surfaceOfChunk(chunk: ChunkNbt): (ColumnSurface | null)[] {
   return out
 }
 
+/**
+ * 把 512×512 的地表图按 step×step 合并成一张小图。
+ *
+ * 缩到很远时，浏览器把 512 像素的瓦片压成几个像素，采样出来的颜色会闪烁；
+ * 在服务端先做平均，既稳定又小得多。step 对应「一个像素代表几个方块」，
+ * 界面取 1 / 2 / 3 / 4。
+ */
+export function downsampleRegion(rgba: Uint8Array, step: number): Uint8Array {
+  const s = Math.max(1, Math.min(REGION_PX, Math.floor(step)))
+  if (s === 1) return rgba
+  const size = Math.ceil(REGION_PX / s)
+  const out = new Uint8Array(size * size * 4)
+  for (let sy = 0; sy < size; sy++) {
+    for (let sx = 0; sx < size; sx++) {
+      let r = 0
+      let g = 0
+      let b = 0
+      let n = 0
+      for (let dz = 0; dz < s; dz++) {
+        const y = sy * s + dz
+        if (y >= REGION_PX) break
+        for (let dx = 0; dx < s; dx++) {
+          const x = sx * s + dx
+          if (x >= REGION_PX) break
+          const i = (y * REGION_PX + x) * 4
+          if (!rgba[i + 3]) continue
+          r += rgba[i]
+          g += rgba[i + 1]
+          b += rgba[i + 2]
+          n++
+        }
+      }
+      if (!n) continue
+      const o = (sy * size + sx) * 4
+      out[o] = Math.round(r / n)
+      out[o + 1] = Math.round(g / n)
+      out[o + 2] = Math.round(b / n)
+      out[o + 3] = 255
+    }
+  }
+  return out
+}
+
+/**
+ * 快速估算一个 region 的平均色。
+ *
+ * 区域总览要把几百个 .mca 各压成一个像素。如果每个都完整解析 1024 个区块，
+ * 光是 243 个 region 就要好几分钟；这里只在 32×32 的区块表里均匀抽 16 个，
+ * 每个取 256 列的地表色求平均。地形是连续的，16 个样本足够代表一个区域。
+ */
+export function regionAverageFromBuffer(buf: Buffer): RGB | null {
+  if (buf.length < 8192) return null
+
+  let r = 0
+  let g = 0
+  let b = 0
+  let n = 0
+  const step = 8
+
+  for (let lz = 0; lz < 32; lz += step) {
+    for (let lx = 0; lx < 32; lx += step) {
+      const locIndex = (lz * 32 + lx) * 4
+      const offset = buf.readUIntBE(locIndex, 3) * 4096
+      if (!offset || offset + 5 > buf.length) continue
+      const length = buf.readUInt32BE(offset)
+      if (length < 2 || offset + 4 + length > buf.length) continue
+      const compression = buf[offset + 4]
+      const data = buf.subarray(offset + 5, offset + 4 + length)
+
+      let raw: Buffer
+      try {
+        if (compression === 1) raw = gunzipSync(data)
+        else if (compression === 2) raw = inflateSync(data)
+        else if (compression === 3) raw = data
+        else continue
+      } catch {
+        continue
+      }
+
+      let chunk: ChunkNbt
+      try {
+        chunk = parseChunkNbt(raw)
+      } catch {
+        continue
+      }
+
+      const cols = surfaceOfChunk(chunk)
+      for (let i = 0; i < 256; i++) {
+        const surf = cols[i]
+        if (!surf) continue
+        const c = colorOf(surf.name, lx * 16 + (i & 15), lz * 16 + (i >> 4))
+        r += c[0]
+        g += c[1]
+        b += c[2]
+        n++
+      }
+    }
+  }
+
+  return n ? [Math.round(r / n), Math.round(g / n), Math.round(b / n)] : null
+}
+
 /** 解析一个 region，返回 RGBA 像素、高度（y + 128）与已探索格数 */
-export function renderRegionFromBuffer(buf: Buffer): {
+export function renderRegionFromBuffer(buf: Buffer, step = 1): {
   rgba: Uint8Array
   heights: Uint16Array
   explored: number
   chunks: number
+  /** 整片区域的平均色（缩到最小时一个 region 画一个像素用） */
+  avg: RGB | null
 } {
   const rgba = new Uint8Array(REGION_PX * REGION_PX * 4)
   const heights = new Uint16Array(REGION_PX * REGION_PX)
@@ -533,7 +637,15 @@ export function renderRegionFromBuffer(buf: Buffer): {
   let explored = 0
   let chunks = 0
 
-  if (buf.length < 8192) return { rgba, heights, explored, chunks }
+  if (buf.length < 8192) {
+    return {
+      rgba: step > 1 ? downsampleRegion(rgba, step) : rgba,
+      heights,
+      explored,
+      chunks,
+      avg: null
+    }
+  }
 
   for (let lz = 0; lz < 32; lz++) {
     for (let lx = 0; lx < 32; lx++) {
@@ -639,7 +751,24 @@ export function renderRegionFromBuffer(buf: Buffer): {
     }
   }
 
-  return { rgba, heights, explored, chunks }
+  // ---- 整片区域的平均色（只算有地表数据的格子）
+  let ar = 0
+  let ag = 0
+  let ab = 0
+  let an = 0
+  for (let i = 0; i < rgba.length; i += 4) {
+    if (!rgba[i + 3]) continue
+    ar += rgba[i]
+    ag += rgba[i + 1]
+    ab += rgba[i + 2]
+    an++
+  }
+  const avg: RGB | null = an
+    ? [Math.round(ar / an), Math.round(ag / an), Math.round(ab / an)]
+    : null
+
+  const out = step > 1 ? downsampleRegion(rgba, step) : rgba
+  return { rgba: out, heights, explored, chunks, avg }
 }
 
 export interface RegionRender {
@@ -647,15 +776,18 @@ export interface RegionRender {
   heights: Uint16Array
   explored: number
   chunks: number
+  avg: RGB | null
 }
 
-export async function renderRegionFile(path: string): Promise<RegionRender> {
+export async function renderRegionFile(path: string, step = 1): Promise<RegionRender> {
   const buf = await fs.readFile(path)
-  const { rgba, heights, explored, chunks } = renderRegionFromBuffer(buf)
+  const { rgba, heights, explored, chunks, avg } = renderRegionFromBuffer(buf, step)
+  const px = Math.ceil(REGION_PX / Math.max(1, Math.floor(step)))
   return {
-    png: encodePng(rgba, REGION_PX, REGION_PX),
+    png: encodePng(rgba, px, px),
     heights,
     explored,
-    chunks
+    chunks,
+    avg
   }
 }

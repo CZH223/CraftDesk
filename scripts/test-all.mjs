@@ -36,6 +36,11 @@ const TESTS = [
   },
   { name: 'test-startscript.ts', group: 'fast', what: '启动脚本生成（含纯 ASCII 检查）' },
   { name: 'test-removal.ts', group: 'fast', what: '删除的守门逻辑与落盘行为' },
+  {
+    name: 'test-plugins-batch.ts',
+    group: 'fast',
+    what: '扩展批量启用/禁用：跳过目标状态、逐条返回错误、拒绝目录外路径'
+  },
   { name: 'test-forwarding.ts', group: 'fast', what: '判定「这台能不能当代理端的后端」' },
   {
     name: 'test-graph.ts',
@@ -77,6 +82,11 @@ const TESTS = [
     name: 'test-bungee-config.ts',
     group: 'fast',
     what: 'BungeeCord / Waterfall 的 config.yml 读写（官方模板、priorities、类型、注释）'
+  },
+  {
+    name: 'test-network-join.ts',
+    group: 'fast',
+    what: '跨服接入：YAML/TOML 补丁、写 servers、Paper 后端转发、移出网络'
   },
   {
     name: 'test-worldmap.ts',

@@ -47,6 +47,10 @@ interface State {
   panel: PanelKey
   panelOpen: boolean
   listCollapsed: boolean
+  /** 打开「跨服网络」弹窗的服务器 id；null 表示没开 */
+  networkTargetId: string | null
+  openNetwork: (id: string) => void
+  closeNetwork: () => void
 
   /** 代理端与后端的从属关系，左侧列表和拓扑视图都用它 */
   topology: Topology | null
@@ -95,6 +99,7 @@ export const useStore = create<State>((set, get) => ({
   panel: 'files',
   panelOpen: true,
   listCollapsed: false,
+  networkTargetId: null,
   topology: null,
   logs: {},
   toasts: [],
@@ -204,6 +209,8 @@ export const useStore = create<State>((set, get) => ({
   setPanel: (panel) => set({ panel, panelOpen: true }),
   togglePanel: () => set((s) => ({ panelOpen: !s.panelOpen })),
   toggleList: () => set((s) => ({ listCollapsed: !s.listCollapsed })),
+  openNetwork: (id) => set({ networkTargetId: id }),
+  closeNetwork: () => set({ networkTargetId: null }),
 
   toast: (text, type = 'info') => {
     const id = ++toastSeq

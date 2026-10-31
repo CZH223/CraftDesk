@@ -1023,6 +1023,7 @@ body.resizing * {
 /* ============================================================ 右侧面板 */
 
 .panel {
+  position: relative;
   width: var(--panel-w);
   min-width: var(--panel-w);
   background: var(--bg-side);
@@ -1173,6 +1174,129 @@ body.resizing * {
 }
 .row:hover {
   background: var(--bg-hover);
+}
+
+.row.selected {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.plugins-batch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 8px;
+}
+
+.plugins-batch-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.plugins-batch-all .net-check {
+  margin: 0 2px 0 0;
+}
+
+.plugins-batch-count {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+/* 选中后的浮动操作条：从底部浮起 + 缓慢呼吸 */
+.plugins-actionbar {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 11px;
+  border-radius: 11px;
+  border: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--bg-side) 90%, transparent);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  animation:
+    plugins-bar-in 0.22s ease-out,
+    plugins-bar-breath 3.6s ease-in-out 0.25s infinite;
+}
+
+.plugins-actionbar-count {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  animation: plugins-count-pop 0.22s ease-out;
+}
+
+.plugins-actionbar-actions {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.plugins-actionbar-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+@keyframes plugins-bar-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes plugins-bar-breath {
+  0%,
+  100% {
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+    border-color: var(--border-strong);
+  }
+  50% {
+    box-shadow:
+      0 13px 34px rgba(0, 0, 0, 0.52),
+      0 0 18px color-mix(in srgb, var(--accent) 22%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
+  }
+}
+
+@keyframes plugins-count-pop {
+  0% {
+    transform: scale(0.86);
+    opacity: 0.55;
+  }
+  65% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plugins-actionbar,
+  .plugins-actionbar-count {
+    animation: none;
+  }
 }
 .row .row-main {
   flex: 1;
@@ -3134,6 +3258,20 @@ body.resizing * {
   min-width: 64px;
 }
 
+.map-jump {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.map-jump .input {
+  width: 68px;
+  height: 26px;
+  padding: 0 7px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 .map-tools {
   margin-left: auto;
   display: flex;
@@ -3142,7 +3280,7 @@ body.resizing * {
 }
 
 .map-scale {
-  min-width: 62px;
+  min-width: 104px;
   text-align: center;
   font-size: 11.5px;
   color: var(--text-faint);
@@ -3200,6 +3338,84 @@ body.resizing * {
 
 .map-view.sharp .map-tile {
   image-rendering: pixelated;
+}
+
+.map-overview {
+  image-rendering: pixelated;
+  border-radius: 2px;
+}
+
+.net-plan {
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.net-plan li {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
+.net-plan li svg {
+  flex: none;
+  margin-top: 3px;
+  color: var(--accent);
+}
+
+.net-report {
+  display: grid;
+  gap: 6px;
+}
+
+.net-report-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  padding: 7px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+}
+
+.net-report-line svg {
+  flex: none;
+  margin-top: 3px;
+}
+
+.net-report-line.ok {
+  background: color-mix(in srgb, var(--ok, #22c55e) 8%, transparent);
+}
+
+.net-report-line.ok svg {
+  color: var(--ok, #22c55e);
+}
+
+.net-report-line.warn {
+  background: color-mix(in srgb, var(--warn, #eab308) 9%, transparent);
+}
+
+.net-report-line.warn svg {
+  color: var(--warn, #eab308);
+}
+
+.map-overview-state {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
 }
 
 .map-tile-pending {

@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs'
-import { join, basename, relative, sep } from 'node:path'
+import { join, basename, relative, resolve, sep } from 'node:path'
 import type { PluginInfo, PluginKind } from '../shared/types'
 import { ZipReader } from './zip'
 import { emptyMeta, parseMcdrDeps, pickAuthor, pickLocalized, readJarMeta } from './extmeta'
@@ -371,4 +371,40 @@ export async function togglePlugin(rootDir: string, relPath: string): Promise<st
   const target = disabled ? full.replace(/\.disabled$/i, '') : `${full}.disabled`
   await fs.rename(full, target)
   return relative(rootDir, target).split(sep).join('/')
+}
+
+/**
+ * 批量启用 / 禁用。
+ *
+ * 一次选中几十个模组时，逐个走 IPC 会产生几十次目录扫描和落盘；
+ * 更重要的是「一键禁用」到一半失败时，用户需要知道哪些没成，
+ * 所以这里逐个处理并收集错误，而不是遇到第一个就整体失败。
+ */
+export async function setPluginsEnabled(
+  rootDir: string,
+  relPaths: string[],
+  enabled: boolean
+): Promise<{ changed: number; errors: { path: string; error: string }[] }> {
+  let changed = 0
+  const errors: { path: string; error: string }[] = []
+  const root = resolve(rootDir)
+
+  for (const relPath of relPaths) {
+    const full = resolve(root, relPath)
+    // 只允许操作服务器目录内的文件
+    if (full !== root && !full.startsWith(root + sep)) {
+      errors.push({ path: relPath, error: '路径不在服务器目录内' })
+      continue
+    }
+    const isEnabled = !full.toLowerCase().endsWith('.disabled')
+    if (isEnabled === enabled) continue
+    const target = enabled ? full.replace(/\.disabled$/i, '') : `${full}.disabled`
+    try {
+      await fs.rename(full, target)
+      changed++
+    } catch (err) {
+      errors.push({ path: relPath, error: (err as Error).message })
+    }
+  }
+  return { changed, errors }
 }

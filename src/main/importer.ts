@@ -132,10 +132,28 @@ async function detectMcVersion(rootDir: string, coreDir: string): Promise<string
   for (const dir of dirs) {
     // 1) 从 logs/latest.log 里找
     const log = await readTail(join(dir, 'logs', 'latest.log'))
+    // Fabric 不打印 "Starting minecraft server version"，它打印的是这一行
+    const fromFabricLog = log.match(/Loading Minecraft\s+([0-9][^\s]*)\s+with Fabric Loader/i)
+    if (fromFabricLog) return fromFabricLog[1].replace(/[^\d.]/g, '')
     const fromLog =
       log.match(/Starting minecraft server version\s+([0-9][^\s]*)/i) ||
       log.match(/This server is running .*?version\s+([0-9][^\s]+)/i)
     if (fromLog) return fromLog[1].replace(/[^\d.]/g, '')
+
+    /*
+     * Fabric 的 intermediary 目录名就是真实的 Minecraft 版本。
+     * 比下面「从 mods 文件名猜」可靠得多：一个 1.21.11 服务端的 mods 里
+     * 完全可能躺着 1.21.5 时代的模组，按文件名猜会把版本记错。
+     */
+    try {
+      const entries = await fs.readdir(
+        join(dir, 'libraries', 'net', 'fabricmc', 'intermediary')
+      )
+      const hit = entries.find((e) => /^\d+\.\d+(?:\.\d+)?$/.test(e))
+      if (hit) return hit
+    } catch {
+      /* 不是 Fabric */
+    }
 
     // 2) version.json（原版服务端会生成）
     for (const f of ['version.json', join('META-INF', 'version.json')]) {

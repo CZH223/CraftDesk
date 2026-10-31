@@ -14,6 +14,7 @@ export function ServerList({ onAdd }: { onAdd: () => void }): JSX.Element {
   const view = useStore((s) => s.view)
   const toast = useStore((s) => s.toast)
   const refresh = useStore((s) => s.refresh)
+  const openNetwork = useStore((s) => s.openNetwork)
 
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -54,6 +55,7 @@ export function ServerList({ onAdd }: { onAdd: () => void }): JSX.Element {
     view,
     onSelect: () => select(s.id),
     onToggle: () => void toggle(s),
+    onNetwork: () => openNetwork(s.id),
     onOpenView: (v: ViewKey) => {
       select(s.id)
       setView(v)
@@ -151,6 +153,7 @@ export function ServerList({ onAdd }: { onAdd: () => void }): JSX.Element {
                         runningCount={shownChildren.filter((c) => c.running).length}
                         onSelect={() => managed && select(managed.id)}
                         onToggle={() => managed && void toggle(managed)}
+                        onNetwork={() => managed && openNetwork(managed.id)}
                         onOpenView={(v) => {
                           if (!managed) return
                           select(managed.id)
@@ -193,6 +196,7 @@ function ServerRow({
   tree,
   onSelect,
   onToggle,
+  onNetwork,
   onOpenView
 }: {
   server: ServerView
@@ -202,6 +206,7 @@ function ServerRow({
   tree?: { collapsed: boolean; count: number; onToggle: () => void }
   onSelect: () => void
   onToggle: () => void
+  onNetwork: () => void
   onOpenView: (v: ViewKey) => void
 }): JSX.Element {
   const rt = server.runtime
@@ -296,12 +301,20 @@ function ServerRow({
             onClick={() => onOpenView('properties')}
           />
           {!isProxyKind(server.kind) && (
-            <SubItem
-              active={view === 'map'}
-              icon="map"
-              label="世界地图"
-              onClick={() => onOpenView('map')}
-            />
+            <>
+              <SubItem
+                active={false}
+                icon="network"
+                label="跨服网络"
+                onClick={onNetwork}
+              />
+              <SubItem
+                active={view === 'map'}
+                icon="map"
+                label="世界地图"
+                onClick={() => onOpenView('map')}
+              />
+            </>
           )}
         </div>
       )}
@@ -319,6 +332,7 @@ function BackendRow({
   view,
   onSelect,
   onToggle,
+  onNetwork,
   onOpenView
 }: {
   node: TopoNode
@@ -329,6 +343,7 @@ function BackendRow({
   runningCount: number
   onSelect: () => void
   onToggle: () => void
+  onNetwork: () => void
   onOpenView: (v: ViewKey) => void
 }): JSX.Element {
   const rt = server?.runtime
@@ -344,7 +359,7 @@ function BackendRow({
       >
         <span className={`dot-line ${running ? 'on' : ''}`} />
         <span className="backend-name">
-          {node.name}
+          {server?.name ?? node.name}
           {edge?.isTry && (
             <span className="tag green" title="try 列表里的默认入口">
               默认
@@ -417,12 +432,20 @@ function BackendRow({
             onClick={() => onOpenView('properties')}
           />
           {server && !isProxyKind(server.kind) && (
-            <SubItem
-              active={view === 'map'}
-              icon="map"
-              label="世界地图"
-              onClick={() => onOpenView('map')}
-            />
+            <>
+              <SubItem
+                active={false}
+                icon="network"
+                label="跨服网络"
+                onClick={onNetwork}
+              />
+              <SubItem
+                active={view === 'map'}
+                icon="map"
+                label="世界地图"
+                onClick={() => onOpenView('map')}
+              />
+            </>
           )}
         </div>
       )}

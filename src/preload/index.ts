@@ -29,8 +29,10 @@ import type {
   ServerRuntime,
   ServerStatus,
   ServerView,
+  MapOverview,
   MapPlayerPosition,
   MapTileResult,
+  NetworkJoinResult,
   Topology,
   VelocityFile,
   WorldMapInfo,
@@ -207,6 +209,13 @@ const api = {
     list: (id: string): Promise<IpcResult<PluginInfo[]>> => ipcRenderer.invoke('plugins:list', id),
     toggle: (id: string, path: string): Promise<IpcResult<string>> =>
       ipcRenderer.invoke('plugins:toggle', id, path),
+    /** 批量启用 / 禁用；失败的条目单独返回，不影响其它条目 */
+    setEnabled: (
+      id: string,
+      paths: string[],
+      enabled: boolean
+    ): Promise<IpcResult<{ changed: number; errors: { path: string; error: string }[] }>> =>
+      ipcRenderer.invoke('plugins:setEnabled', id, paths, enabled),
     /** 删除一个模组 / 插件文件，how 说明是进了回收站还是被永久删除 */
     remove: (id: string, path: string): Promise<IpcResult<{ how: DeleteMethod }>> =>
       ipcRenderer.invoke('plugins:delete', id, path)
@@ -227,11 +236,37 @@ const api = {
     get: (): Promise<IpcResult<Topology>> => ipcRenderer.invoke('topology:get')
   },
 
+  /**
+   * 把一台服务器接入 / 移出某个代理端网络。
+   * 接入会同时改代理端配置、后端 server.properties，必要时下载桥接模组。
+   */
+  network: {
+    /** 当前挂在哪个代理端下面（旧配置也能按端口认出来） */
+    status: (id: string): Promise<IpcResult<{ proxyId: string; alias: string } | null>> =>
+      ipcRenderer.invoke('network:status', id),
+    join: (id: string, proxyId: string): Promise<IpcResult<NetworkJoinResult>> =>
+      ipcRenderer.invoke('network:join', id, proxyId),
+    leave: (
+      id: string
+    ): Promise<IpcResult<{ removed: boolean; alias: string; remaining: number }>> =>
+      ipcRenderer.invoke('network:leave', id)
+  },
+
   /** 世界地图：区块地表的俯视图，按 region 分块渲染 */
   map: {
     info: (id: string): Promise<IpcResult<WorldMapInfo>> => ipcRenderer.invoke('map:info', id),
-    tile: (id: string, dim: string, rx: number, rz: number): Promise<IpcResult<MapTileResult>> =>
-      ipcRenderer.invoke('map:tile', id, dim, rx, rz),
+    /** step：每个像素代表多少方块（1–4），缩小时降低渲染分辨率 */
+    tile: (
+      id: string,
+      dim: string,
+      rx: number,
+      rz: number,
+      step?: number
+    ): Promise<IpcResult<MapTileResult>> =>
+      ipcRenderer.invoke('map:tile', id, dim, rx, rz, step),
+    /** 缩到最小时的一像素一 region 总览 */
+    overview: (id: string, dim: string): Promise<IpcResult<MapOverview>> =>
+      ipcRenderer.invoke('map:overview', id, dim),
     height: (id: string, dim: string, x: number, z: number): Promise<IpcResult<number | null>> =>
       ipcRenderer.invoke('map:height', id, dim, x, z),
     /** 在线玩家位置（仅 CraftDesk 启动的服务端可读） */

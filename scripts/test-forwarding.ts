@@ -78,6 +78,41 @@ async function main(): Promise<void> {
   })
   check('完整版 FabricProxy 可以接 Bungee', (await probeProxyReady(fabricFull, 'fabric', 'bungee')).ready, true)
 
+  console.log('\n══ Forge / NeoForge + ProxyCompatibleForge ══')
+  const pcf = await server('forge-pcf', {
+    'mods/proxy-compatible-forge-1.3.1.jar': 'x',
+    'config/proxy-compatible-forge.toml':
+      '[forwarding]\nenabled = true\nmode = "LEGACY"\nsecret = ""\n'
+  })
+  check('PCF 算 Forge 后端', (await probeProxyReady(pcf, 'forge', 'bungee')).ready, true)
+  check('说明是 PCF', (await probeProxyReady(pcf, 'forge', 'bungee')).via, 'ProxyCompatibleForge')
+  check('PCF 同样支持 Velocity', (await probeProxyReady(pcf, 'neoforge', 'velocity')).ready, true)
+
+  console.log('\n══ 同时装了 Lite 和 Bungee 桥接 ══')
+  const both = await server('fabric-both', {
+    'mods/FabricProxy-Lite-2.11.0.jar': 'x',
+    'mods/fabricproxy-1.9.0.jar': 'x',
+    'config/FabricProxy.toml': 'BungeeCord = true\n',
+    'config/FabricProxy-Lite.toml': 'secret = "abc"\n'
+  })
+  check('Bungee 选完整桥接', (await probeProxyReady(both, 'fabric', 'bungee')).via, 'FabricProxy')
+  check('Bungee 判定为可用', (await probeProxyReady(both, 'fabric', 'bungee')).ready, true)
+  check('Velocity 选 Lite', (await probeProxyReady(both, 'fabric', 'velocity')).via, 'FabricProxy-Lite')
+
+  console.log('\n══ ProxyForward（1.21.11 的 Fabric 桥接）══')
+  const pf = await server('fabric-pf', {
+    'mods/proxyforward-fabric-1.0.1+1.21.11.jar': 'x',
+    'config/proxyforward.toml': 'forwarding_mode = "bungee"\n'
+  })
+  check('bungee 模式算后端', (await probeProxyReady(pf, 'fabric', 'bungee')).ready, true)
+  check('说明是 ProxyForward', (await probeProxyReady(pf, 'fabric', 'bungee')).via, 'ProxyForward')
+  check('模式不匹配时不算 Velocity 后端', (await probeProxyReady(pf, 'fabric', 'velocity')).ready, false)
+  const pfV = await server('fabric-pf-v', {
+    'mods/proxyforward-fabric-1.0.1+1.21.11.jar': 'x',
+    'config/proxyforward.toml': 'forwarding_mode = "velocity"\nvelocity_secret = "abc"\n'
+  })
+  check('velocity 模式算后端', (await probeProxyReady(pfV, 'fabric', 'velocity')).ready, true)
+
   console.log('\n══ 什么都没装的 Fabric ══')
   const bare = await server('bare', { 'mods/sodium.jar': 'x' })
   check('不算后端', (await probeProxyReady(bare, 'fabric')).ready, false)

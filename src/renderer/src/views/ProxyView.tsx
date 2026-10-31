@@ -75,6 +75,11 @@ const BUNGEE_FIELDS: Record<string, FieldMeta> = {
     kind: 'bool',
     hint: '开启后后端要配 BungeeCord 系转发，否则玩家进不去'
   },
+  forge_support: {
+    label: 'Forge / NeoForge 支持',
+    kind: 'bool',
+    hint: '允许模组客户端通过代理端连接（forge_support）'
+  },
   proxy_protocol: { label: 'PROXY 协议', kind: 'bool' },
   ping_passthrough: { label: 'Ping 透传', kind: 'bool' },
   query_enabled: { label: '开启 Query', kind: 'bool' },
@@ -114,7 +119,7 @@ const BASIC_GROUPS: Record<'velocity' | 'bungee', { title: string; keys: string[
   ],
   bungee: [
     { title: '监听与展示', keys: ['host', 'motd', 'max_players', 'tab_list'] },
-    { title: '玩家验证与转发', keys: ['online_mode', 'ip_forward'] },
+    { title: '玩家验证与转发', keys: ['online_mode', 'ip_forward', 'forge_support'] },
     {
       title: '网络与查询',
       keys: [
@@ -453,7 +458,8 @@ function BasicTab({
             <div className="hint" style={{ lineHeight: 1.9 }}>
               BungeeCord 没有独立的转发密钥：打开 <code>ip_forward</code> 之后，它会在握手时
               把玩家的 IP 与 UUID 一并带给后端。后端要装 BungeeCord 系的转发支持
-              （Fabric 服可以用 FabricProxy-Lite 的 BungeeCord 模式），否则玩家会以离线身份进入。
+              （Fabric 服要用 Fabric-Bungeecord-Proxy，FabricProxy-Lite 只支持 Velocity），
+              否则玩家会以离线身份进入。Forge / NeoForge 还需要打开 <code>forge_support</code>。
             </div>
           </div>
         )}

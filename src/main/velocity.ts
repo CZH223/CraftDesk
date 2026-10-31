@@ -252,7 +252,9 @@ export async function writeVelocityServers(
   body.push('')
   body.push('# In what order we should try servers when a player logs in or is kicked from a server.')
   body.push('try = [')
-  for (const t of tryList) body.push(`    "${t}"`)
+  // TOML 数组的每个元素都必须用逗号分隔；Velocity 的解析器会直接报
+  // Invalid separator '"' in array，然后拒绝启动。末尾留逗号是合法的。
+  for (const t of tryList) body.push(`    "${t}",`)
   body.push(']')
   body.push('')
 

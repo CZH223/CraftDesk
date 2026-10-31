@@ -155,7 +155,13 @@ export async function buildTopology(
           file.format === 'bungee' ? 'bungee' : 'velocity'
         )
         if (!judge.ready) continue
-        ready.push({ target, fw: await probeForwarding(target.layout) })
+        ready.push({
+          target,
+          fw: await probeForwarding(
+            target.layout,
+            file.format === 'bungee' ? 'bungee' : 'velocity'
+          )
+        })
       }
 
       // 一个都没接上转发：这条 [servers] 在 CraftDesk 里没有对应后端，

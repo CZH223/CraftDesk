@@ -50,7 +50,8 @@ async function readProxyModConfig(
 
   // 两种格式的键名一样，FabricProxy-Lite 是平铺的，FabricProxy 分在 [velocity] / [common] 段下，
   // 直接全文找键名对两者都成立
-  const secret = text.match(/^\s*secret\s*=\s*["']([^"']*)["']/m)?.[1] ?? null
+  const secret =
+    text.match(/^\s*(?:velocity_secret|secret)\s*=\s*["']([^"']*)["']/m)?.[1] ?? null
   const hackRaw = text.match(/^\s*hackOnlineMode\s*=\s*(true|false)/m)?.[1]
 
   return { secret, hackOnlineMode: hackRaw ? hackRaw === 'true' : null }
@@ -139,7 +140,7 @@ export async function checkBackends(opts: BackendCheckOptions): Promise<BackendC
     // ---- 1. 后端靠什么接转发 ----
     // 模组、Paper 原生、spigot.yml 里的 bungeecord 都算数：
     // 只认「有没有 FabricProxy」会把一堆本来配好的 Paper / Purpur 后端判成错误。
-    const mod = await findProxyMod(match.layout)
+    const mod = await findProxyMod(match.layout, opts.proxyFormat)
     const ready = await probeProxyReady(match.layout, match.cfg.kind, opts.proxyFormat)
 
     if (ready.ready && ready.viaKind === 'mod') {

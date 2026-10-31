@@ -113,7 +113,10 @@ permissions:
   - bungeecord.command.ip
   - bungeecord.command.reload
   - bungeecord.command.kick
-ip_forward: false
+# 默认打开：后端才能拿到玩家的真实 IP 与 UUID（配合后端的转发支持）
+ip_forward: true
+# 默认打开：允许 Forge / NeoForge 客户端通过代理端连接
+forge_support: true
 network_compression_threshold: 256
 connection_throttle: 4000
 connection_throttle_limit: 3

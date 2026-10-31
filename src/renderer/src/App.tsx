@@ -6,6 +6,7 @@ import { ServerList } from './components/ServerList'
 import { Toolbar } from './components/Toolbar'
 import { Toasts } from './components/Toasts'
 import { AddServerDialog } from './components/AddServerDialog'
+import { NetworkDialog } from './components/NetworkDialog'
 import { Modal } from './components/ui'
 import { ConsoleView } from './views/ConsoleView'
 import { DashboardView } from './views/DashboardView'
@@ -26,6 +27,8 @@ export function App(): JSX.Element {
   const view = useStore((s) => s.view)
   const panelOpen = useStore((s) => s.panelOpen)
   const listCollapsed = useStore((s) => s.listCollapsed)
+  const networkTargetId = useStore((s) => s.networkTargetId)
+  const networkTarget = servers.find((s) => s.id === networkTargetId) ?? null
 
   const [addOpen, setAddOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
@@ -313,6 +316,12 @@ export function App(): JSX.Element {
       <Toasts />
 
       {addOpen && <AddServerDialog onClose={() => setAddOpen(false)} />}
+      {networkTarget && (
+        <NetworkDialog
+          server={networkTarget}
+          onClose={() => useStore.getState().closeNetwork()}
+        />
+      )}
       {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} />}
     </div>
   )

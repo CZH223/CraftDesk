@@ -324,7 +324,12 @@ export interface BungeeUpdate {
  * 找不到的键不追加：BungeeCord 的配置项极多，乱加一个不存在的键会被当成未知项；
  * 而且真正缺的项第一次启动时它自己会补全。
  */
-export function patchBungeeConfig(raw: string, updates: BungeeUpdate[]): string {
+export function patchBungeeConfig(
+  raw: string,
+  updates: BungeeUpdate[],
+  /** 顶层键缺失时是否补出来。默认不补，因为 BungeeCord 对未知键很敏感 */
+  ensure = false
+): string {
   const { lines, eol } = splitLines(raw)
   const range = findFirstListener(lines)
 
@@ -353,6 +358,9 @@ export function patchBungeeConfig(raw: string, updates: BungeeUpdate[]): string 
     })
     if (idx >= 0) {
       lines[idx] = makeLine(`${u.key}: ${yamlValue(u.value, u.type)}`)
+    } else if (ensure && u.section === '') {
+      // 只给已知的顶层开关补键；追加在末尾，顶格的键仍然属于顶层
+      lines.push(makeLine(`${u.key}: ${yamlValue(u.value, u.type)}`))
     }
   }
 
@@ -494,10 +502,14 @@ export function writeBungeeServersIntoText(
   return lines.map((l) => l.text).join(eol)
 }
 
-export async function writeBungeeFields(dir: string, updates: BungeeUpdate[]): Promise<void> {
+export async function writeBungeeFields(
+  dir: string,
+  updates: BungeeUpdate[],
+  ensure = false
+): Promise<void> {
   const path = join(dir, 'config.yml')
   const raw = await fs.readFile(path, 'utf-8')
-  await fs.writeFile(path, patchBungeeConfig(raw, updates), 'utf-8')
+  await fs.writeFile(path, patchBungeeConfig(raw, updates, ensure), 'utf-8')
 }
 
 export async function writeBungeeServers(

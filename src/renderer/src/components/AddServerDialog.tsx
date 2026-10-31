@@ -122,6 +122,8 @@ function ImportForm({ onBack, onClose }: { onBack: () => void; onClose: () => vo
   const refresh = useStore((s) => s.refresh)
   const select = useStore((s) => s.select)
   const javaList = useStore((s) => s.javaList)
+  const servers = useStore((s) => s.servers)
+  const proxies = servers.filter((s) => isProxyKind(s.kind))
 
   const settings = useStore((s) => s.settings)
 
@@ -133,6 +135,7 @@ function ImportForm({ onBack, onClose }: { onBack: () => void; onClose: () => vo
   const [mode, setMode] = useState<'script' | 'jar'>('jar')
   const [javaPath, setJavaPath] = useState('')
   const [memory, setMemory] = useState({ min: 1024, max: 4096 })
+  const [networkId, setNetworkId] = useState('')
   const [saving, setSaving] = useState(false)
 
   const pick = async (): Promise<void> => {
@@ -178,6 +181,21 @@ function ImportForm({ onBack, onClose }: { onBack: () => void; onClose: () => vo
       toast(`${res.data!.name} 已加入列表`, 'success')
       await refresh()
       select(res.data!.id)
+      // 下拉里选了网络就顺手接入；失败不阻止导入，之后还能在总览页重试
+      if (networkId) {
+        const join = await window.api.network.join(res.data!.id, networkId)
+        if (join.ok) {
+          const warnings = join.data!.warnings.length
+          toast(
+            `已接入 ${join.data!.proxyName}${warnings ? `，有 ${warnings} 条提醒需要看一下` : ''}`,
+            warnings ? 'info' : 'success'
+          )
+          await refresh()
+          await useStore.getState().loadTopology()
+        } else {
+          toast(`已导入，但自动配置失败：${join.error}`, 'error')
+        }
+      }
       onClose()
     } else {
       toast(res.error ?? '添加失败', 'error')
@@ -328,6 +346,26 @@ function ImportForm({ onBack, onClose }: { onBack: () => void; onClose: () => vo
         />
       </Field>
 
+      {proxies.length > 0 && !isProxyKind(detected.kind) && (
+        <Field
+          label="加入跨服网络"
+          hint="导入后自动配置转发；之后也能在总览页修改"
+        >
+          <select
+            className="select"
+            value={networkId}
+            onChange={(e) => setNetworkId(e.target.value)}
+          >
+            <option value="">暂不加入</option>
+            {proxies.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} · {kindLabel(p.kind)}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+
       <div className="modal-foot" style={{ padding: 0, borderTop: 'none', marginTop: 16 }}>
         <button className="btn" onClick={onBack}>
           <Icon name="chevron-left" size={14} />
@@ -406,11 +444,11 @@ function NetworkForm({ onBack, onClose }: { onBack: () => void; onClose: () => v
 
   const importNow = async (): Promise<void> => {
     if (!plan) return
-    const targets = [
+    const targets: { dir: string; name: string; alias?: string }[] = [
       ...(includeProxy ? [{ dir: plan.proxy.dir, name: plan.proxy.name }] : []),
       ...plan.backends
         .filter((b) => b.status === 'found' && b.dir && picked.has(b.alias))
-        .map((b) => ({ dir: b.dir!, name: b.detected?.name || b.alias }))
+        .map((b) => ({ dir: b.dir!, name: b.detected?.name || b.alias, alias: b.alias }))
     ]
     if (!targets.length) {
       toast('没有勾选任何要导入的东西', 'info')
@@ -420,15 +458,24 @@ function NetworkForm({ onBack, onClose }: { onBack: () => void; onClose: () => v
     setProgress({ done: 0, total: targets.length })
     const added: string[] = []
     const failed: string[] = []
+    let proxyId = ''
 
     for (const [i, t] of targets.entries()) {
       setBusy(`正在导入 ${t.name}（${i + 1}/${targets.length}）`)
+      // 代理端排在最前面，它导入成功后才能把后端挂到它下面
       const res = await window.api.servers.add(t.dir, {
         memoryMin: memory.min,
-        memoryMax: memory.max
+        memoryMax: memory.max,
+        ...(t.alias && proxyId
+          ? { networkId: proxyId, networkAlias: t.alias }
+          : {})
       })
-      if (res.ok) added.push(res.data!.name)
-      else failed.push(`${t.name}：${res.error ?? '失败'}`)
+      if (res.ok) {
+        added.push(res.data!.name)
+        if (!t.alias) proxyId = res.data!.id
+      } else {
+        failed.push(`${t.name}：${res.error ?? '失败'}`)
+      }
       setProgress({ done: i + 1, total: targets.length })
     }
 
@@ -679,8 +726,10 @@ function CreateForm({
   const downloads = useStore((s) => s.downloads)
   const pythonList = useStore((s) => s.pythonList)
   const refreshPython = useStore((s) => s.refreshPython)
+  const servers = useStore((s) => s.servers)
 
   const proxyGroup = group === 'proxy'
+  const networkChoices = servers.filter((s) => isProxyKind(s.kind))
   const kindList = proxyGroup ? PROXY_KINDS : KINDS
   const [kind, setKind] = useState<ServerKind>(proxyGroup ? 'velocity' : 'paper')
   const [versions, setVersions] = useState<{ id: string; latestBuild?: string }[]>([])
@@ -694,6 +743,8 @@ function CreateForm({
   const [motd, setMotd] = useState('A Minecraft Server')
   const [memory, setMemory] = useState({ min: 1024, max: 4096 })
   const [eula, setEula] = useState(true)
+  const [onlineMode, setOnlineMode] = useState(true)
+  const [networkId, setNetworkId] = useState('')
   const [installing, setInstalling] = useState(false)
 
   // MCDReforged：装核心是一回事，套不套这层包装层是另一回事
@@ -787,6 +838,7 @@ function CreateForm({
       port,
       motd,
       acceptEula: isProxy ? true : eula,
+      onlineMode,
       mcdr: wantMcdr,
       pythonPath: wantMcdr ? python?.path : undefined
     })
@@ -795,6 +847,20 @@ function CreateForm({
       toast(`${res.data!.name} 创建完成`, 'success')
       await refresh()
       select(res.data!.id)
+      if (networkId && !isProxy) {
+        const join = await window.api.network.join(res.data!.id, networkId)
+        if (join.ok) {
+          const warnings = join.data!.warnings.length
+          toast(
+            `已接入 ${join.data!.proxyName}${warnings ? `，有 ${warnings} 条提醒` : ''}`,
+            warnings ? 'info' : 'success'
+          )
+          await refresh()
+          await useStore.getState().loadTopology()
+        } else {
+          toast(`已创建，但自动配置失败：${join.error}`, 'error')
+        }
+      }
       onClose()
     } else {
       toast(res.error ?? '创建失败', 'error')
@@ -951,14 +1017,43 @@ function CreateForm({
           />
         </Field>
         {isProxy ? (
-          <div className="hint" style={{ lineHeight: 1.8 }}>
-            代理端不需要同意 EULA（那是 Mojang 对「服务端」的要求），
-            所以这里不会有那一步；它也不会生成 world、logs 之类的东西。
-          </div>
+          <>
+            <Field
+              label="正版验证"
+              hint="接入离线后端时会自动关闭；正版玩家多的话可以先开着"
+            >
+              <Switch checked={onlineMode} onChange={setOnlineMode} />
+            </Field>
+            <div className="hint" style={{ lineHeight: 1.8 }}>
+              代理端不需要同意 EULA（那是 Mojang 对「服务端」的要求），
+              所以这里不会有那一步；它也不会生成 world、logs 之类的东西。
+            </div>
+          </>
         ) : (
-          <Field label="自动同意 EULA" hint="不勾选的话首次启动需要手动同意">
-            <Switch checked={eula} onChange={setEula} />
-          </Field>
+          <>
+            <Field label="自动同意 EULA" hint="不勾选的话首次启动需要手动同意">
+              <Switch checked={eula} onChange={setEula} />
+            </Field>
+            {networkChoices.length > 0 && (
+              <Field
+                label="加入跨服网络"
+                hint="创建完成后自动配置转发；之后也能在总览页修改"
+              >
+                <select
+                  className="select"
+                  value={networkId}
+                  onChange={(e) => setNetworkId(e.target.value)}
+                >
+                  <option value="">暂不加入</option>
+                  {networkChoices.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} · {kindLabel(p.kind)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
+          </>
         )}
       </div>
 

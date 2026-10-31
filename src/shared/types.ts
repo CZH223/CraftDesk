@@ -68,6 +68,12 @@ export interface ServerConfig {
   icon: string
   note: string
   order: number
+  /**
+   * 所属跨服网络的代理端 id。空字符串表示这台服务器独立运行。
+   * 后端在代理端配置里的名字单独记下来，离开网络时才能准确删掉那一条。
+   */
+  networkId: string
+  networkAlias: string
 }
 
 /** 进程运行时状态（不持久化） */
@@ -233,6 +239,30 @@ export interface MapTileResult {
   cached: boolean
   /** 有地表数据的格子数 */
   explored: number
+  /** 每个像素代表多少个方块（1 / 2 / 3 / 4） */
+  step: number
+  /** 图片边长像素，等于 512 / step */
+  size: number
+}
+
+/**
+ * 缩到最小时的地图：每个 region 文件（.mca）只画一个像素，
+ * 用来一眼看清整个世界由哪些区域组成。
+ */
+export interface MapOverview {
+  /** data:image/png;base64,... */
+  png: string
+  /** 覆盖的方块范围 */
+  minX: number
+  maxX: number
+  minZ: number
+  maxZ: number
+  minRx: number
+  minRz: number
+  cols: number
+  rows: number
+  ms: number
+  cached: boolean
 }
 
 export interface PlayerRecord {
@@ -466,6 +496,8 @@ export interface CreateServerRequest {
   port: number
   motd: string
   acceptEula: boolean
+  /** 代理端的正版验证（服务端写进 server.properties） */
+  onlineMode?: boolean
   /** 装完之后再用 MCDReforged 包一层 */
   mcdr?: boolean
   pythonPath?: string
@@ -558,6 +590,34 @@ export interface BackendCheck {
   backendOnlineMode: boolean | null
   hackOnlineMode: boolean | null
   issues: BackendIssue[]
+}
+
+// ---------------------------------------------------------------- 加入跨服网络
+
+/**
+ * 把一台服务端接入某个代理端的结果。
+ *
+ * 接入不只是往 config.yml 里加一行地址：后端要打开对应的转发方式，
+ * 模组服还要装桥接模组。每条改动都单独记下来，界面上逐条显示，
+ * 用户才知道到底动了哪些文件、哪些没做成。
+ */
+export interface NetworkJoinResult {
+  proxyId: string
+  proxyName: string
+  proxyKind: ServerKind
+  /** 写进代理端配置的后端名 */
+  alias: string
+  address: string
+  /** 后端最终使用的端口（与代理端冲突时会被自动改掉） */
+  backendPort: number
+  /** 实际检测到的 Minecraft 版本（可能修正导入时记错的版本） */
+  mcVersion: string
+  /** 已经完成的操作 */
+  changes: string[]
+  /** 需要用户注意、但没导致失败的事 */
+  warnings: string[]
+  /** 代理端的正版验证是否被改成了关闭 */
+  proxyOnlineMode: boolean | null
 }
 
 // ---------------------------------------------------------------- 跨服网络的导入

@@ -59,6 +59,8 @@ export function defaultServer(partial: Partial<ServerConfig>): ServerConfig {
     icon: '',
     note: '',
     order: 0,
+    networkId: '',
+    networkAlias: '',
     ...partial
   }
 }

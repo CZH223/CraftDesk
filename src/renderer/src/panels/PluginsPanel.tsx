@@ -78,6 +78,9 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
   const [showAllUsedBy, setShowAllUsedBy] = useState(false)
   /** 星图：null 表示关着，字符串（可以是空串）表示开着并聚焦某个模组 */
   const [graphFocus, setGraphFocus] = useState<string | null | undefined>(undefined)
+  /** 多选：存相对路径 */
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [batchBusy, setBatchBusy] = useState(false)
 
   const load = useCallback(async (): Promise<void> => {
     const res = await window.api.plugins.list(server.id)
@@ -91,6 +94,15 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
     setFilter('all')
     void load()
   }, [load])
+
+  // 列表刷新后，把已经不存在的路径从选择里去掉
+  useEffect(() => {
+    const paths = new Set(items.map((i) => i.path))
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((p) => paths.has(p)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [items])
 
   const counts = useMemo(() => {
     const c: Record<PluginKind, number> = { mcdr: 0, proxy: 0, plugin: 0, mod: 0 }
@@ -172,6 +184,88 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
       )
     })
   }, [items, filter, status, query, onlyProblems, problems, sideFilter])
+
+  const selectedItems = useMemo(
+    () => items.filter((i) => selected.has(i.path)),
+    [items, selected]
+  )
+  const allVisibleSelected =
+    visible.length > 0 && visible.every((i) => selected.has(i.path))
+  const someVisibleSelected =
+    !allVisibleSelected && visible.some((i) => selected.has(i.path))
+
+  const toggleSelect = (path: string): void =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+
+  const selectAllVisible = (): void =>
+    setSelected((prev) => new Set([...prev, ...visible.map((i) => i.path)]))
+
+  /** 表头勾选框：全选 / 取消当前筛选结果 */
+  const toggleAllVisible = (): void => {
+    if (allVisibleSelected) {
+      setSelected((prev) => {
+        const next = new Set(prev)
+        for (const i of visible) next.delete(i.path)
+        return next
+      })
+    } else {
+      selectAllVisible()
+    }
+  }
+
+  /** 反选：只翻转当前筛选结果，其它筛选下已选的保持不动 */
+  const invertVisible = (): void =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      for (const i of visible) {
+        if (next.has(i.path)) next.delete(i.path)
+        else next.add(i.path)
+      }
+      return next
+    })
+
+  const clearSelection = (): void => setSelected(new Set())
+
+  const applyBatch = async (enabled: boolean, list: PluginInfo[]): Promise<void> => {
+    const targets = list.filter((i) => i.enabled !== enabled)
+    if (!targets.length) {
+      toast(enabled ? '当前列表里的扩展都已启用' : '当前列表里的扩展都已禁用', 'info')
+      return
+    }
+    if (running) {
+      toast(
+        enabled ? '请先停止服务器再批量启用，否则改动不会生效' : '请先停止服务器再批量禁用，否则改动不会生效',
+        'info'
+      )
+    }
+    setBatchBusy(true)
+    const res = await window.api.plugins.setEnabled(
+      server.id,
+      targets.map((i) => i.path),
+      enabled
+    )
+    setBatchBusy(false)
+    if (!res.ok) {
+      toast(res.error ?? '批量操作失败', 'error')
+      return
+    }
+    await load()
+    clearSelection()
+    const { changed, errors } = res.data!
+    if (errors.length) {
+      toast(
+        `已${enabled ? '启用' : '禁用'} ${changed} 个，${errors.length} 个失败：${errors[0].error}`,
+        'error'
+      )
+    } else {
+      toast(`已${enabled ? '启用' : '禁用'} ${changed} 个扩展`, 'success')
+    }
+  }
 
   /** 打开依赖详情。列表默认折叠，「被依赖」可能有七十多个 */
   const openDetail = (p: PluginInfo): void => {
@@ -389,6 +483,56 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
         </div>
       )}
 
+      {items.length > 0 && (
+        <div className="plugins-batch">
+          <label className="plugins-batch-all" title="全选当前筛选结果">
+            <input
+              type="checkbox"
+              className="net-check"
+              checked={allVisibleSelected}
+              ref={(el) => {
+                if (el) el.indeterminate = someVisibleSelected
+              }}
+              onChange={toggleAllVisible}
+            />
+            全选 {visible.length}
+          </label>
+          <button
+            className="btn sm ghost"
+            disabled={!visible.length}
+            onClick={invertVisible}
+            title="翻转当前筛选结果的选择状态"
+          >
+            反选
+          </button>
+          <button
+            className="btn sm ghost"
+            disabled={selected.size === 0}
+            onClick={clearSelection}
+          >
+            清空
+          </button>
+          <span className="plugins-batch-count">已选 {selectedItems.length}</span>
+          <div className="spacer" />
+          <button
+            className="btn sm"
+            disabled={!visible.length || batchBusy}
+            title="作用于当前筛选结果；没有筛选时就是全部"
+            onClick={() => void applyBatch(true, visible)}
+          >
+            一键启用
+          </button>
+          <button
+            className="btn sm"
+            disabled={!visible.length || batchBusy}
+            title="作用于当前筛选结果；没有筛选时就是全部"
+            onClick={() => void applyBatch(false, visible)}
+          >
+            一键禁用
+          </button>
+        </div>
+      )}
+
       <div
         style={{
           display: 'flex',
@@ -426,7 +570,10 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
         </button>
       </div>
 
-      <div className="panel-scroll">
+      <div
+        className="panel-scroll"
+        style={{ paddingBottom: selectedItems.length ? 96 : undefined }}
+      >
         {loading && <div className="panel-empty">正在读取扩展元数据…</div>}
 
         {!loading && items.length === 0 && (
@@ -461,10 +608,19 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
           const shown = p.requires.filter((e) => e.state !== 'platform')
           return (
             <div
-              className={`row ${p.enabled ? '' : 'disabled'} ${flash === p.path ? 'flash' : ''}`}
+              className={`row ${p.enabled ? '' : 'disabled'} ${
+                selected.has(p.path) ? 'selected' : ''
+              } ${flash === p.path ? 'flash' : ''}`}
               key={p.path}
               data-dep-path={p.path}
             >
+              <input
+                type="checkbox"
+                className="net-check"
+                checked={selected.has(p.path)}
+                title="选择这个扩展"
+                onChange={() => toggleSelect(p.path)}
+              />
               <span
                 className="server-icon"
                 style={{
@@ -568,7 +724,7 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
                       ? '禁用：改名成 .disabled，服务器不会加载它，但文件还在'
                       : '启用：把 .disabled 后缀去掉'
                   }
-                  disabled={busy === p.path}
+                  disabled={busy === p.path || batchBusy}
                   onClick={() => void toggle(p)}
                 >
                   {p.enabled ? '禁用' : '启用'}
@@ -576,7 +732,7 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
                 <button
                   className="btn sm ghost"
                   title="删除这个文件（移到回收站）"
-                  disabled={busy === p.path}
+                  disabled={busy === p.path || batchBusy}
                   onClick={() => setRemoving(p)}
                 >
                   <Icon name="trash" size={14} />
@@ -593,6 +749,49 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
           )
         })}
       </div>
+
+      {/*
+        浮动操作条：选中后从底部浮起来，和常见启动器的资源管理一致。
+        呼吸光晕用 box-shadow 做，不动布局，避免列表跟着抖。
+      */}
+      {selectedItems.length > 0 && (
+        <div className="plugins-actionbar">
+          <span
+            className="plugins-actionbar-count"
+            key={selectedItems.length}
+            title="可以跨筛选选择；启用/禁用只作用于这些条目"
+          >
+            已选择 {selectedItems.length} 个
+          </span>
+          {batchBusy && <span className="spin small" />}
+          <div className="plugins-actionbar-actions">
+            <button
+              className="btn sm"
+              disabled={batchBusy}
+              onClick={() => void applyBatch(true, selectedItems)}
+            >
+              <Icon name="check" size={13} />
+              启用
+            </button>
+            <button
+              className="btn sm"
+              disabled={batchBusy}
+              onClick={() => void applyBatch(false, selectedItems)}
+            >
+              <Icon name="ban" size={13} />
+              禁用
+            </button>
+            <button
+              className="btn sm ghost"
+              disabled={batchBusy}
+              onClick={clearSelection}
+            >
+              <Icon name="x" size={13} />
+              取消选择
+            </button>
+          </div>
+        </div>
+      )}
 
       {detail && (
         <Modal

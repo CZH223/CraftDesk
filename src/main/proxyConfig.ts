@@ -24,7 +24,12 @@ export async function readProxyFile(cfg: ServerConfig): Promise<VelocityFile> {
  * 界面传上来的 key 一律当作顶层键或监听器键；Velocity 的字段还带段名（section），
  * 所以这里按格式分开处理，而不是硬塞进同一个形状。
  */
-export async function writeProxyFields(cfg: ServerConfig, updates: VelocityUpdate[]): Promise<void> {
+export async function writeProxyFields(
+  cfg: ServerConfig,
+  updates: VelocityUpdate[],
+  /** 找不到的键要不要补一条（只对顶层布尔开关用，避免乱加未知项） */
+  ensure = false
+): Promise<void> {
   if (cfg.kind === 'velocity') {
     await writeVelocityFile(cfg.dir, updates)
     return
@@ -33,7 +38,7 @@ export async function writeProxyFields(cfg: ServerConfig, updates: VelocityUpdat
   const bungeeUpdates: BungeeUpdate[] = updates
     .filter((u) => u.section === '' || u.section === 'listener')
     .map((u) => ({ section: u.section as '' | 'listener', key: u.key, value: u.value, type: u.type }))
-  await writeBungeeFields(cfg.dir, bungeeUpdates)
+  await writeBungeeFields(cfg.dir, bungeeUpdates, ensure)
 }
 
 export async function writeProxyServers(

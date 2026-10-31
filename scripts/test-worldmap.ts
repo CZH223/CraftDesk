@@ -15,6 +15,7 @@ import { unpackLongs } from '../src/main/nbt'
 import { encodePng } from '../src/main/png'
 import {
   decodeSectionIndices,
+  downsampleRegion,
   inspectWorld,
   REGION_PX,
   renderRegionFromBuffer,
@@ -117,6 +118,32 @@ const png = encodePng(rgba, 2, 2)
 const decoded = decodePng(png)
 check('尺寸', [decoded.w, decoded.h], [2, 2])
 check('像素原样返回', [...decoded.pixels], [...rgba])
+
+console.log('\n══ 多级地图：2×2 / 3×3 / 4×4 合并 ══')
+const full = new Uint8Array(REGION_PX * REGION_PX * 4)
+// 左上角 2×2 分别红、绿、蓝、白，合并后应当接近中灰
+const put = (x: number, y: number, r: number, g: number, b: number): void => {
+  const i = (y * REGION_PX + x) * 4
+  full[i] = r
+  full[i + 1] = g
+  full[i + 2] = b
+  full[i + 3] = 255
+}
+put(0, 0, 255, 0, 0)
+put(1, 0, 0, 255, 0)
+put(0, 1, 0, 0, 255)
+put(1, 1, 255, 255, 255)
+const half = downsampleRegion(full, 2)
+check('2×2 合并后的边长', Math.sqrt(half.length / 4), REGION_PX / 2)
+check('合并色是四格平均', [...half.slice(0, 4)], [128, 128, 128, 255])
+check('没有地表的格子保持透明', half[4 * (REGION_PX / 2 + 1) + 3], 0)
+const third = downsampleRegion(full, 3)
+check('3×3 合并后的边长', Math.sqrt(third.length / 4), Math.ceil(REGION_PX / 3))
+const quarter = downsampleRegion(full, 4)
+check('4×4 合并后的边长', Math.sqrt(quarter.length / 4), REGION_PX / 4)
+const stepped = renderRegionFromBuffer(Buffer.alloc(0), 4)
+check('空 region 按 step 缩小后仍是透明图', stepped.rgba.length, 128 * 128 * 4)
+check('空 region 没有平均色', stepped.avg, null)
 
 console.log('\n══ 损坏/空 region 不崩 ══')
 const empty = renderRegionFromBuffer(Buffer.alloc(0))

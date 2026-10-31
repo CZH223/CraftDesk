@@ -9,6 +9,7 @@ import {
   statusLabel
 } from '../utils'
 import { ServerAvatar } from '../components/ServerAvatar'
+import { NetworkDialog } from '../components/NetworkDialog'
 import { isProxyKind, type ServerStatus, type ServerView } from '../../../shared/types'
 import { networkCounts } from '../../../shared/network'
 
@@ -37,6 +38,7 @@ export function DashboardView({
   const refresh = useStore((s) => s.refresh)
   const [info, setInfo] = useState<{ cpus: number; totalMem: number } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [networkFor, setNetworkFor] = useState<ServerView | null>(null)
   const [, setTick] = useState(0)
 
   useEffect(() => {
@@ -186,11 +188,14 @@ export function DashboardView({
               mem={stats[s.id]?.mem ?? 0}
               active={s.id === activeId}
               sharedPort={sharedIds.has(s.id)}
+              onNetwork={() => setNetworkFor(s)}
               onOpen={(view) => onOpenServer(s.id, view)}
             />
           ))}
         </div>
       )}
+
+      {networkFor && <NetworkDialog server={networkFor} onClose={() => setNetworkFor(null)} />}
     </div>
   )
 }
@@ -209,12 +214,14 @@ function ServerLine({
   mem,
   active,
   sharedPort,
+  onNetwork,
   onOpen
 }: {
   server: ServerView
   mem: number
   active: boolean
   sharedPort: boolean
+  onNetwork: () => void
   onOpen: (view?: ViewKey) => void
 }): JSX.Element {
   const toast = useStore((s) => s.toast)
@@ -299,6 +306,17 @@ function ServerLine({
         >
           <Icon name={running ? 'stop' : 'play'} size={running ? 13 : 14} />
         </button>
+        {!isProxyKind(server.kind) && (
+          <button
+            title="跨服网络：加入 / 移出代理端，自动配置转发"
+            onClick={(e) => {
+              e.stopPropagation()
+              onNetwork()
+            }}
+          >
+            <Icon name="network" size={16} />
+          </button>
+        )}
         <button
           title="启动配置：Java、内存、核心"
           onClick={(e) => {

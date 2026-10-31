@@ -29,7 +29,25 @@ export const PROXY_MODS: { key: string; pattern: RegExp; config: string[] }[] = 
   {
     key: 'FabricProxy',
     pattern: /^fabricproxy(?![-_]?lite)/i,
-    config: ['config/FabricProxy/config.toml', 'config/fabricproxy.toml']
+    config: [
+      'config/FabricProxy.toml',
+      'config/FabricProxy/config.toml',
+      'config/fabricproxy.toml'
+    ]
+  },
+  {
+    // Forge / NeoForge 的桥接。Bungee 用 LEGACY，Velocity 用 MODERN，
+    // 都写在 config/proxy-compatible-forge.toml 的 [forwarding] 里。
+    key: 'ProxyCompatibleForge',
+    pattern: /^proxy[-_]?compatible[-_]?forge/i,
+    config: ['config/proxy-compatible-forge.toml']
+  },
+  {
+    // 同时支持 Bungee 与 Velocity 的 Fabric / NeoForge 桥接，
+    // 主要用于 1.21.11 这类 Fabric-Bungeecord-Proxy 已经跟不上的版本。
+    key: 'ProxyForward',
+    pattern: /^proxyforward/i,
+    config: ['config/proxyforward.toml']
   }
 ]
 
@@ -43,7 +61,9 @@ async function readIfExists(path: string): Promise<string | null> {
 
 /** 在模组目录里找转发模组 */
 export async function findProxyMod(
-  layout: ServerLayout
+  layout: ServerLayout,
+  /** 以代理端格式为准挑一个能用的模组（Lite 只支持 Velocity） */
+  proxyFormat?: 'velocity' | 'bungee'
 ): Promise<{ name: string; file: string; configPath: string | null } | null> {
   if (!layout.modsDir) return null
   let entries: string[]
@@ -54,6 +74,8 @@ export async function findProxyMod(
   }
 
   const jars = entries.filter((e) => /\.jar$/i.test(e))
+  const found: { name: string; file: string; configPath: string | null }[] = []
+
   for (const mod of PROXY_MODS) {
     const hit = jars.find((j) => mod.pattern.test(j.replace(/\.jar$/i, '')))
     if (!hit) continue
@@ -69,22 +91,46 @@ export async function findProxyMod(
         /* 下一个候选路径 */
       }
     }
-    return { name: mod.key, file: hit, configPath }
+    found.push({ name: mod.key, file: hit, configPath })
   }
-  return null
+
+  if (!found.length) return null
+  /*
+   * 两个转发模组同时存在时（比如用户原来用 Velocity、后来改接 Bungee），
+   * 不能只看目录顺序：FabricProxy-Lite 排在前面，但它接 Bungee 会把玩家踢掉。
+   * 按代理端格式优先挑真正支持的那一个。
+   */
+  if (proxyFormat === 'bungee') {
+    return (
+      found.find((m) => m.name === 'ProxyForward') ??
+      found.find((m) => m.name !== 'FabricProxy-Lite') ??
+      found[0]
+    )
+  }
+  if (proxyFormat === 'velocity') {
+    return (
+      found.find((m) => m.name === 'FabricProxy-Lite') ??
+      found.find((m) => m.name === 'ProxyForward') ??
+      found[0]
+    )
+  }
+  return found[0]
 }
 
 /** 转发模组的密钥（要和代理端 forwarding.secret 一致） */
 export async function probeForwarding(
-  layout: ServerLayout
+  layout: ServerLayout,
+  proxyFormat?: 'velocity' | 'bungee'
 ): Promise<{ mod: string | null; secret: string | null }> {
-  const mod = await findProxyMod(layout)
+  const mod = await findProxyMod(layout, proxyFormat)
   if (!mod) return { mod: null, secret: null }
   if (!mod.configPath) return { mod: mod.name, secret: null }
 
   const text = await readIfExists(mod.configPath)
   if (!text) return { mod: mod.name, secret: null }
-  const secret = text.match(/^\s*secret\s*=\s*["']([^"']*)["']/m)?.[1] ?? null
+  // ProxyForward 用 velocity_secret，其它桥接用 secret
+  const secret =
+    text.match(/^\s*(?:velocity_secret|secret)\s*=\s*["']([^"']*)["']/m)?.[1] ?? null
   return { mod: mod.name, secret }
 }
 
@@ -102,11 +148,20 @@ export async function probeProxyReady(
   kind: ServerKind | '',
   proxyFormat: 'velocity' | 'bungee' = 'velocity'
 ): Promise<ProxyReady> {
-  const fw = await probeForwarding(layout)
+  const fw = await probeForwarding(layout, proxyFormat)
   if (fw.mod) {
     // Lite 版只实现了 Velocity 的 modern 转发，Bungee/Waterfall 的 legacy 握手它不认
     if (proxyFormat === 'bungee' && fw.mod === 'FabricProxy-Lite') {
       return { ready: false, via: fw.mod, viaKind: 'mod' }
+    }
+    // ProxyForward 两种都支持，但配置里的 forwarding_mode 必须和代理端对得上
+    if (fw.mod === 'ProxyForward') {
+      const mod = await findProxyMod(layout, proxyFormat)
+      const text = mod?.configPath ? await readIfExists(mod.configPath) : null
+      const mode = text?.match(/^\s*forwarding_mode\s*=\s*["']?([a-z]+)/m)?.[1]
+      if (mode && (mode === 'bungee') !== (proxyFormat === 'bungee')) {
+        return { ready: false, via: fw.mod, viaKind: 'mod' }
+      }
     }
     return { ready: true, via: fw.mod, viaKind: 'mod' }
   }
