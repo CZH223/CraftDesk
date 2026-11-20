@@ -12,7 +12,15 @@ import type {
   IpcResult,
   InstallRequest,
   JavaInfo,
+  LatestModRequest,
+  LatestModResult,
   LogLine,
+  McmodDownloadList,
+  McmodRelationRequest,
+  McmodRelations,
+  McmodSearchHit,
+  ModCompat,
+  ModCompatItem,
   McdrPlugin,
   McdrRelease,
   NetworkPlan,
@@ -20,6 +28,7 @@ import type {
   RegistrySource,
   RegistryVersion,
   PlayerRecord,
+  PluginCounts,
   PluginInfo,
   PythonInfo,
   PropertiesEntry,
@@ -29,9 +38,13 @@ import type {
   ServerRuntime,
   ServerStatus,
   ServerView,
+  MapExportEstimate,
+  MapExportProgress,
+  MapExportResult,
   MapOverview,
   MapPlayerPosition,
   MapTileResult,
+  PlayerProfile,
   NetworkJoinResult,
   Topology,
   VelocityFile,
@@ -119,6 +132,9 @@ const api = {
     /** 每台服务器监听的端口（服务端读 server.properties，代理端读它自己的配置） */
     ports: (): Promise<IpcResult<Record<string, number | null>>> =>
       ipcRenderer.invoke('servers:ports'),
+    /** 插件 / 模组数量：决定右侧栏显示哪几个分栏 */
+    counts: (id: string): Promise<IpcResult<PluginCounts>> =>
+      ipcRenderer.invoke('plugins:counts', id),
     create: (req: CreateServerRequest): Promise<IpcResult<ServerView>> =>
       ipcRenderer.invoke('server:create', req)
   },
@@ -197,6 +213,19 @@ const api = {
       players: { name: string; uuid?: string }[]
     ): Promise<IpcResult<Record<string, string | null>>> =>
       ipcRenderer.invoke('players:avatars', id, players),
+    /** 正版状态、全身皮肤、经验、背包 / 末影箱 / 潜影盒 */
+    detail: (
+      id: string,
+      name: string,
+      uuid?: string
+    ): Promise<IpcResult<PlayerProfile>> =>
+      ipcRenderer.invoke('players:detail', id, name, uuid),
+    /** 批量取物品图标（data URL），取不到为 null */
+    itemIcons: (
+      id: string,
+      ids: string[]
+    ): Promise<IpcResult<Record<string, string | null>>> =>
+      ipcRenderer.invoke('players:itemIcons', id, ids),
     setOp: (id: string, name: string, value: boolean): Promise<IpcResult<boolean>> =>
       ipcRenderer.invoke('players:setOp', id, name, value),
     setWhitelist: (id: string, name: string, value: boolean): Promise<IpcResult<boolean>> =>
@@ -277,7 +306,36 @@ const api = {
       id: string
     ): Promise<IpcResult<{ port: number; generatedPassword: boolean }>> =>
       ipcRenderer.invoke('map:enableRcon', id),
-    clear: (id: string): Promise<IpcResult<boolean>> => ipcRenderer.invoke('map:clear', id)
+    clear: (id: string): Promise<IpcResult<boolean>> => ipcRenderer.invoke('map:clear', id),
+    /** 导出地图：all = 一张全图，components = 按连通块分别导出；maxPx = 长边像素 */
+    exportMap: (
+      id: string,
+      dim: string,
+      mode: 'all' | 'components',
+      maxPx?: number
+    ): Promise<IpcResult<MapExportResult>> =>
+      ipcRenderer.invoke('map:export', id, dim, mode, maxPx),
+    /** 导出前的输出尺寸 / 文件大小预估 */
+    exportEstimate: (
+      id: string,
+      dim: string,
+      mode: 'all' | 'components',
+      maxPx?: number
+    ): Promise<IpcResult<MapExportEstimate>> =>
+      ipcRenderer.invoke('map:exportEstimate', id, dim, mode, maxPx),
+    /** 导出进度（地图弹窗订阅） */
+    onExportProgress: (cb: (p: MapExportProgress) => void): (() => void) =>
+      on('map:export-progress', (...a) => cb(a[0] as MapExportProgress))
+  },
+
+  /** MC百科的模组关系（前置 / 拓展 / 联动） */
+  mcmod: {
+    relations: (req: McmodRelationRequest): Promise<IpcResult<McmodRelations | null>> =>
+      ipcRenderer.invoke('mcmod:relations', req),
+    search: (query: string): Promise<IpcResult<McmodSearchHit[]>> =>
+      ipcRenderer.invoke('mcmod:search', query),
+    downloads: (classId: string): Promise<IpcResult<McmodDownloadList | null>> =>
+      ipcRenderer.invoke('mcmod:downloads', classId)
   },
 
   /** 扩展下载源：Modrinth / Hangar / SpigotMC / CurseForge / MCDReforged */
@@ -306,6 +364,18 @@ const api = {
       ipcRenderer.invoke('registry:mcdrList', force),
     mcdrReleases: (repository: string): Promise<IpcResult<McdrRelease[]>> =>
       ipcRenderer.invoke('registry:mcdrReleases', repository),
+    /** 星图里补齐缺失：按 id 找 Modrinth 项目，并返回最新适配版本 */
+    latest: (
+      serverId: string,
+      req: LatestModRequest
+    ): Promise<IpcResult<LatestModResult | null>> =>
+      ipcRenderer.invoke('registry:latest', serverId, req),
+    /** 批量检查百科条目在服务器版本 / 加载器下是否还有可用版本 */
+    compat: (
+      serverId: string,
+      items: ModCompatItem[]
+    ): Promise<IpcResult<Record<string, ModCompat>>> =>
+      ipcRenderer.invoke('registry:compat', serverId, items),
     install: (
       req: InstallRequest
     ): Promise<IpcResult<{ path: string; relPath: string; bytes: number; dir: string }>> =>

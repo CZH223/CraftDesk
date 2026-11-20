@@ -1,6 +1,13 @@
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
-import type { McdrPlugin, McdrRelease, ModrinthHit, ModrinthVersion } from '../shared/types'
+import type {
+  McdrPlugin,
+  McdrRelease,
+  ModCompat,
+  ModrinthHit,
+  ModrinthVersion
+} from '../shared/types'
+import { httpFetch } from './http'
 
 /**
  * 扩展下载源。
@@ -20,7 +27,7 @@ async function getJson<T>(url: string): Promise<T> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT)
   try {
-    const res = await fetch(url, {
+    const res = await httpFetch(url, {
       headers: { 'User-Agent': UA, Accept: 'application/json' },
       signal: ctrl.signal
     })
@@ -35,7 +42,7 @@ async function getText(url: string): Promise<string> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT)
   try {
-    const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: ctrl.signal })
+    const res = await httpFetch(url, { headers: { 'User-Agent': UA }, signal: ctrl.signal })
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
     return await res.text()
   } finally {
@@ -168,6 +175,183 @@ export async function modrinthVersions(
         .map((d) => d.project_id as string)
     }
   })
+}
+
+/** 服务器类型 → Modrinth 的加载器标识（和下载页的筛选条件保持一致） */
+export function modrinthLoaderForKind(kind: string): string {
+  switch (kind) {
+    case 'fabric':
+      return 'fabric'
+    case 'forge':
+      return 'forge'
+    case 'neoforge':
+      return 'neoforge'
+    case 'paper':
+    case 'purpur':
+    case 'spigot':
+    case 'bukkit':
+      return 'paper'
+    case 'velocity':
+      return 'velocity'
+    case 'waterfall':
+      return 'waterfall'
+    case 'bungeecord':
+      return 'bungeecord'
+    default:
+      return ''
+  }
+}
+
+export interface ModrinthProjectRef {
+  projectId: string
+  slug: string
+  title: string
+  projectType: string
+}
+
+interface ModrinthProjectJson {
+  id: string
+  slug: string
+  title: string
+  project_type: string
+}
+
+function normalizeProjectName(text: string): string {
+  return text.toLowerCase().replace(/[\s_-]+/g, '')
+}
+
+/**
+ * 把依赖声明里的 id / 名字解析成 Modrinth 项目。
+ *
+ * 先按 slug / project id 直接取项目 —— Fabric 系声明的依赖 id 大多就是
+ * Modrinth 的 slug（fabric-api、cloth-config…），这一步最准。
+ * 直接取不到才搜索，而且只接受 slug / 标题能对上的结果：
+ * 搜错一个名字装进去的东西，比装不上更难查。
+ */
+export async function resolveModrinthProject(wanted: {
+  id: string
+  name?: string
+  kind: 'mod' | 'plugin'
+}): Promise<ModrinthProjectRef | null> {
+  const id = wanted.id.trim()
+  const name = wanted.name?.trim() ?? ''
+  const candidates = [id, name].filter(Boolean)
+
+  for (const candidate of candidates) {
+    try {
+      const p = await getJson<ModrinthProjectJson>(
+        `https://api.modrinth.com/v2/project/${encodeURIComponent(candidate)}`
+      )
+      if (p.project_type !== 'mod' && p.project_type !== 'plugin') continue
+      return { projectId: p.id, slug: p.slug, title: p.title, projectType: p.project_type }
+    } catch {
+      /* 不是 slug / 404，继续用搜索兜底 */
+    }
+  }
+
+  const wantedId = id.toLowerCase()
+  const wantedName = normalizeProjectName(name)
+  const matches = (h: {
+    projectId: string
+    slug: string
+    title: string
+    projectType: string
+  }): boolean =>
+    (Boolean(wantedId) && (h.slug.toLowerCase() === wantedId || h.projectId === id)) ||
+    (Boolean(wantedName) && normalizeProjectName(h.title) === wantedName) ||
+    (Boolean(wantedName) && normalizeProjectName(h.slug) === wantedName)
+
+  /*
+   * Modrinth 的搜索按词切分：依赖 id 里的连字符可以换成空格，
+   * 结尾的 api 也经常是粘在名字后面的（yungsapi → yungs）。
+   * 这些变体只接受「slug / 标题能对上」的结果，避免搜到近似模组就装错。
+   */
+  const queries = [
+    id,
+    id.replace(/[_-]+/g, ' '),
+    /api$/i.test(id) && id.length > 4 ? id.replace(/api$/i, '') : '',
+    name && name !== id ? name : ''
+  ].filter((q): q is string => Boolean(q))
+
+  for (const query of [...new Set(queries)]) {
+    try {
+      const search = await searchModrinth({
+        query,
+        projectType: wanted.kind,
+        limit: 10,
+        index: 'relevance'
+      })
+      const hit = search.hits.find(matches)
+      if (hit) {
+        return {
+          projectId: hit.projectId,
+          slug: hit.slug,
+          title: hit.title,
+          projectType: hit.projectType
+        }
+      }
+    } catch {
+      /* 单个查询失败不影响后面的变体 */
+    }
+  }
+  return null
+}
+
+/**
+ * 判断一个模组在当前服务器版本 / 加载器下有没有可安装版本。
+ *
+ * 先用带 facets 的搜索探路（一次请求就能排除大多数不兼容的百科条目），
+ * 只有搜不到时才去解析项目并查版本，区分「项目存在但没适配」和
+ * 「Modrinth 根本没收录」。返回值用于星图隐藏不兼容节点。
+ */
+export async function modrinthCompatibility(
+  wanted: { id: string; name?: string; kind: 'mod' | 'plugin' },
+  filter: { gameVersion?: string; loader?: string }
+): Promise<ModCompat> {
+  const id = wanted.id.trim()
+  const name = wanted.name?.trim() || id
+  const wantedId = normalizeProjectName(id)
+  const wantedName = normalizeProjectName(name)
+  const matches = (h: { projectId: string; slug: string; title: string }): boolean =>
+    (Boolean(wantedId) && (h.projectId === id || normalizeProjectName(h.slug) === wantedId)) ||
+    (Boolean(wantedName) && normalizeProjectName(h.title) === wantedName) ||
+    (Boolean(wantedName) && normalizeProjectName(h.slug) === wantedName)
+
+  try {
+    const search = await searchModrinth({
+      query: name,
+      projectType: wanted.kind,
+      gameVersion: filter.gameVersion,
+      loader: filter.loader,
+      limit: 10,
+      index: 'relevance'
+    })
+    if (search.hits.some(matches)) return 'ok'
+  } catch {
+    /* 搜索失败就继续走完整解析 */
+  }
+
+  const project = await resolveModrinthProject({
+    id,
+    name,
+    kind: wanted.kind
+  })
+  if (!project) return 'unknown'
+  try {
+    const versions = await modrinthVersions(project.projectId, filter)
+    return latestVersion(versions) ? 'ok' : 'bad'
+  } catch {
+    return 'unknown'
+  }
+}
+
+/** 最新版本在最前面；Modrinth 本身按发布时间倒序返回，这里再保险一次 */
+export function latestVersion(list: ModrinthVersion[]): ModrinthVersion | null {
+  return (
+    [...list]
+      .filter((v) => Boolean(v.fileUrl && v.fileName))
+      .sort((a, b) => (b.publishedAt || '').localeCompare(a.publishedAt || ''))[0] ?? null
+  )
 }
 
 // ---------------------------------------------------------------- MCDReforged

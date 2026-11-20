@@ -2,13 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from '../components/Icon'
 import { RemoteIcon } from '../components/RemoteIcon'
 import { Modal } from '../components/ui'
-import { useStore } from '../store'
+import { useStore, type RegistryPreset } from '../store'
 import { formatBytes } from '../utils'
 import { isProxyKind } from '../../../shared/types'
 import type {
   InstallTarget,
   McdrPlugin,
   McdrRelease,
+  McmodDownloadFile,
+  McmodDownloadList,
+  McmodRelations,
+  McmodSearchHit,
   RegistryHit,
   RegistrySource,
   RegistryVersion,
@@ -66,6 +70,13 @@ const SOURCES: SourceMeta[] = [
     hint: '模组为主',
     kinds: ['mod'],
     note: 'CurseForge 官方 API 必须带 Key。到 console.curseforge.com 免费申请后填进「设置」即可。'
+  },
+  {
+    key: 'mcmod',
+    label: 'MC百科',
+    hint: '按百科文件表匹配 CurseForge / GitHub / Modrinth 直链',
+    kinds: ['mod', 'plugin'],
+    note: 'MC百科自己的下载按钮需要验证码。这里读取它的文件清单，再按同名文件去 CurseForge / GitHub / Modrinth 找直链；找不到直链的文件可以打开百科页面手动下载。'
   }
 ]
 
@@ -82,10 +93,16 @@ export function RegistryView({ server }: { server: ServerView }): JSX.Element {
   const [source, setSource] = useState<RegistrySource>('modrinth')
   const [layout, setLayout] = useState<ServerLayoutInfo | null>(null)
   const settings = useStore((s) => s.settings)
+  const preset = useStore((s) => s.registryPreset)
 
   useEffect(() => {
     void window.api.layout.get(server.id).then((r) => r.ok && setLayout(r.data!))
   }, [server.id])
+
+  // 从星图右键跳过来：统一回 Modrinth，搜索词由 BrowserTab 应用
+  useEffect(() => {
+    if (preset) setSource('modrinth')
+  }, [preset?.nonce])
 
   const meta = SOURCES.find((s) => s.key === source)
   const cfMissing = source === 'curseforge' && !settings?.curseforgeApiKey
@@ -118,7 +135,9 @@ export function RegistryView({ server }: { server: ServerView }): JSX.Element {
         </span>
       </div>
 
-      {source === 'mcdr' ? (
+      {source === 'mcmod' ? (
+        <McmodTab server={server} layout={layout} />
+      ) : source === 'mcdr' ? (
         <McdrTab server={server} layout={layout} />
       ) : cfMissing ? (
         <div className="center-state">
@@ -133,7 +152,13 @@ export function RegistryView({ server }: { server: ServerView }): JSX.Element {
           </button>
         </div>
       ) : (
-        <BrowserTab server={server} layout={layout} source={source} meta={meta!} />
+        <BrowserTab
+          server={server}
+          layout={layout}
+          source={source}
+          meta={meta!}
+          preset={preset}
+        />
       )}
     </div>
   )
@@ -145,12 +170,14 @@ function BrowserTab({
   server,
   layout,
   source,
-  meta
+  meta,
+  preset
 }: {
   server: ServerView
   layout: ServerLayoutInfo | null
   source: RegistrySource
   meta: SourceMeta
+  preset: RegistryPreset | null
 }): JSX.Element {
   const toast = useStore((s) => s.toast)
   // 代理端：版本号是代理自己的（Velocity 3.4.0 / BungeeCord 构建号），
@@ -175,6 +202,14 @@ function BrowserTab({
     setHits([])
     setError('')
   }, [source, meta])
+
+  // 星图右键「前往下载界面」：填好搜索词和类型，直接看结果
+  useEffect(() => {
+    if (!preset) return
+    setProjectKind(preset.kind)
+    setQuery(preset.query)
+    setUseServerVersion(true)
+  }, [preset?.nonce])
 
   const search = useCallback(
     async (offset: number, append: boolean): Promise<void> => {
@@ -263,7 +298,7 @@ function BrowserTab({
           onChange={(e) => setLoader(e.target.value)}
         >
           <option value="">全部加载器</option>
-          {['fabric', 'forge', 'neoforge', 'quilt', 'paper', 'spigot', 'velocity', 'waterfall'].map(
+          {['fabric', 'forge', 'neoforge', 'quilt', 'paper', 'spigot', 'velocity'].map(
             (l) => (
               <option key={l} value={l}>
                 {l}
@@ -420,6 +455,42 @@ function VersionPicker({
   const [error, setError] = useState('')
   const [selected, setSelected] = useState('')
   const [installing, setInstalling] = useState(false)
+  const [relations, setRelations] = useState<McmodRelations | null>(null)
+  const [relLoading, setRelLoading] = useState(true)
+  const [relError, setRelError] = useState('')
+  const [relOpen, setRelOpen] = useState(false)
+
+  // 下载前也能看到这个模组的前置 / 拓展 / 联动，不用再开星图
+  useEffect(() => {
+    let cancelled = false
+    setRelLoading(true)
+    setRelError('')
+    setRelations(null)
+    void window.api.mcmod
+      .relations({ id: hit.id, name: hit.name })
+      .then((res) => {
+        if (cancelled) return
+        setRelLoading(false)
+        if (!res.ok) {
+          setRelError(res.error ?? '查询失败')
+          return
+        }
+        if (!res.data) {
+          setRelError('MC百科暂未收录')
+          return
+        }
+        setRelations(res.data)
+        setRelOpen(true)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setRelLoading(false)
+        setRelError(err instanceof Error ? err.message : String(err))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [hit.id, hit.name])
 
   useEffect(() => {
     void (async () => {
@@ -439,6 +510,22 @@ function VersionPicker({
   }, [source, hit.id, isProxy, server.mcVersion, server.kind])
 
   const v = versions.find((x) => x.id === selected)
+  const relGroups = relations
+    ? (
+        [
+          ['required', '前置', '#ef4444'],
+          ['extends', '拓展', '#3b82f6'],
+          ['linked', '联动', '#a855f7']
+        ] as const
+      )
+        .map(([key, label, color]) => ({
+          key,
+          label,
+          color,
+          items: relations.nodes.filter((n) => n.category === key)
+        }))
+        .filter((g) => g.items.length > 0)
+    : []
 
   const install = async (): Promise<void> => {
     if (!v) return
@@ -540,7 +627,346 @@ function VersionPicker({
           </div>
         </>
       )}
+
+      <div className="picker-relations">
+        <button className="picker-rel-head" onClick={() => setRelOpen((v) => !v)}>
+          <Icon name="network" size={14} />
+          <span>模组关系</span>
+          <span className="hint">
+            {relLoading
+              ? '正在查询 MC百科…'
+              : relations
+                ? relGroups.map((g) => `${g.label} ${g.items.length}`).join(' · ')
+                : relError}
+          </span>
+          <span className="spacer" />
+          <Icon name={relOpen ? 'chevron-up' : 'chevron-down'} size={14} />
+        </button>
+        {relOpen && relations && relGroups.length > 0 && (
+          <div className="picker-rel-body">
+            {relGroups.map((g) => (
+              <div className="picker-rel-group" key={g.key}>
+                <span className="picker-rel-label" style={{ color: g.color }}>
+                  {g.label}
+                </span>
+                <div className="picker-rel-links">
+                  {g.items.map((n) => (
+                    <button
+                      key={`${n.id}-${n.classId ?? n.name}`}
+                      className="picker-rel-link"
+                      title={n.classId ? '打开 MC百科页面' : n.name}
+                      onClick={() =>
+                        n.classId &&
+                        void window.api.app.openExternal(
+                          `https://www.mcmod.cn/class/${n.classId}.html`
+                        )
+                      }
+                    >
+                      {n.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+            {relations.externalLinks.length > 0 && (
+              <div className="picker-rel-group">
+                <span className="picker-rel-label">外链</span>
+                <div className="picker-rel-links">
+                  {relations.externalLinks
+                    .filter((l, i, list) => list.findIndex((x) => x.url === l.url) === i)
+                    .map((l) => (
+                      <button
+                        key={l.url}
+                        className="picker-rel-link"
+                        title={`${l.label} · ${l.url}`}
+                        onClick={() => void window.api.app.openExternal(l.url)}
+                      >
+                        {l.provider === 'curseforge'
+                          ? 'CurseForge'
+                          : l.provider === 'github'
+                            ? 'GitHub'
+                            : 'Modrinth'}
+                      </button>
+                    ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </Modal>
+  )
+}
+
+// ------------------------------------------------------------------ MC百科下载
+
+function mcmodLoaderNames(kind: string): string[] {
+  switch (kind) {
+    case 'fabric':
+      return ['Fabric', 'Quilt']
+    case 'forge':
+      return ['Forge']
+    case 'neoforge':
+      return ['NeoForge', 'Forge']
+    case 'paper':
+    case 'purpur':
+    case 'spigot':
+    case 'bukkit':
+      return ['Paper', 'Spigot', 'Bukkit', 'Purpur']
+    case 'velocity':
+      return ['Velocity']
+    case 'waterfall':
+    case 'bungeecord':
+      return ['BungeeCord', 'Waterfall']
+    default:
+      return []
+  }
+}
+
+function mcmodInstallTarget(kind: string): InstallTarget | null {
+  if (kind === 'fabric' || kind === 'forge' || kind === 'neoforge') return 'mod'
+  if (['paper', 'purpur', 'spigot', 'bukkit'].includes(kind) || isProxyKind(kind)) {
+    return 'plugin'
+  }
+  return null
+}
+
+/**
+ * MC百科下载页。
+ *
+ * MC百科自己的「立即下载」需要验证码，不能自动提交。这里改为读取它的
+ * 文件清单（文件名 / MC 版本 / 加载器），再到 CurseForge / GitHub /
+ * Modrinth 找同名文件，用外部 CDN 的直链装到服务器目录。
+ */
+function McmodTab({
+  server,
+  layout
+}: {
+  server: ServerView
+  layout: ServerLayoutInfo | null
+}): JSX.Element {
+  const toast = useStore((s) => s.toast)
+  const [query, setQuery] = useState('')
+  const [hits, setHits] = useState<McmodSearchHit[]>([])
+  const [searching, setSearching] = useState(false)
+  const [selected, setSelected] = useState<McmodSearchHit | null>(null)
+  const [list, setList] = useState<McmodDownloadList | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [onlyCurrent, setOnlyCurrent] = useState(true)
+  const [installing, setInstalling] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (timer.current) clearTimeout(timer.current)
+    const q = query.trim()
+    if (q.length < 2) {
+      setHits([])
+      setSearching(false)
+      return
+    }
+    setSearching(true)
+    timer.current = setTimeout(() => {
+      void window.api.mcmod.search(q).then((res) => {
+        setSearching(false)
+        setHits(res.ok ? res.data! : [])
+      })
+    }, 350)
+    return () => {
+      if (timer.current) clearTimeout(timer.current)
+    }
+  }, [query])
+
+  const open = useCallback(async (hit: McmodSearchHit): Promise<void> => {
+    setSelected(hit)
+    setList(null)
+    setLoading(true)
+    const res = await window.api.mcmod.downloads(hit.classId)
+    setLoading(false)
+    if (!res.ok) {
+      toast(res.error ?? '读取下载页失败', 'error')
+      return
+    }
+    if (!res.data) {
+      toast('MC百科没有这个模组的下载页', 'error')
+      return
+    }
+    setList(res.data)
+  }, [toast])
+
+  const loaders = mcmodLoaderNames(server.kind)
+  const target = mcmodInstallTarget(server.kind)
+  const files = useMemo(() => {
+    const all = list?.files ?? []
+    if (!onlyCurrent) return all
+    return all.filter((f) => {
+      const versionOk =
+        !server.mcVersion || f.mcVersions.length === 0 || f.mcVersions.includes(server.mcVersion)
+      const loaderOk =
+        loaders.length === 0 || f.loaders.length === 0 || f.loaders.some((l) => loaders.includes(l))
+      return versionOk && loaderOk
+    })
+  }, [list, onlyCurrent, server.mcVersion, loaders])
+
+  const install = async (file: McmodDownloadFile): Promise<void> => {
+    if (!file.url) {
+      void window.api.app.openExternal(file.pageUrl)
+      return
+    }
+    if (!target) {
+      toast(`${server.kind} 服务端不接受这种扩展`, 'error')
+      return
+    }
+    setInstalling(file.id)
+    const res = await window.api.registry.install({
+      serverId: server.id,
+      target,
+      url: file.url,
+      fileName: file.fileName,
+      label: file.fileName,
+      fileSize: file.size
+    })
+    setInstalling(null)
+    if (res.ok) {
+      const dest = target === 'mod' ? layout?.modsDir : layout?.mcPluginsDir
+      toast(`${file.fileName} 已下载到 ${dest || '服务器目录'}`, 'success')
+    } else {
+      toast(res.error ?? '下载失败', 'error')
+    }
+  }
+
+  if (selected) {
+    return (
+      <div className="panel-scroll" style={{ padding: '8px 16px 24px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <button className="btn sm" onClick={() => { setSelected(null); setList(null) }}>
+            <Icon name="chevron-left" size={14} />
+            返回搜索
+          </button>
+          <b>{list?.title || selected.title}</b>
+          <div className="spacer" style={{ flex: 1 }} />
+          <label className="graph-field">
+            <input
+              type="checkbox"
+              className="net-check"
+              checked={onlyCurrent}
+              onChange={(e) => setOnlyCurrent(e.target.checked)}
+            />
+            只看当前版本
+          </label>
+        </div>
+
+        <div className="issue-bar" style={{ marginBottom: 10 }}>
+          <Icon name="alert" size={15} />
+          <span className="issue-text">
+            MC百科的「立即下载」需要验证码，软件不会绕过它。这里按同名文件去
+            CurseForge / GitHub / Modrinth 找直链；没有直链的文件请点「百科页」手动下载。
+          </span>
+          {list && (
+            <button
+              className="btn sm"
+              onClick={() => void window.api.app.openExternal(list.pageUrl)}
+            >
+              <Icon name="external" size={13} />
+              百科页
+            </button>
+          )}
+        </div>
+
+        {loading ? (
+          <div className="center-state" style={{ minHeight: 160 }}>
+            <div className="spin" />
+            <div>正在读取文件列表并匹配外部直链…</div>
+          </div>
+        ) : files.length === 0 ? (
+          <div className="center-state" style={{ minHeight: 160 }}>
+            <Icon name="alert" size={24} />
+            <div>没有符合 {server.mcVersion || '当前版本'} 的文件</div>
+            <div className="hint">可以关掉「只看当前版本」再找找。</div>
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gap: 6 }}>
+            {files.map((file) => (
+              <div className="version-row" key={file.id}>
+                <span className={`dot ${file.url ? 'running' : 'stopped'}`} />
+                <span className="vr-main">
+                  <span className="vr-title">
+                    {file.fileName}
+                    {file.source && (
+                      <span className="tag green">
+                        {file.source === 'curseforge'
+                          ? 'CurseForge'
+                          : file.source === 'github'
+                            ? 'GitHub'
+                            : 'Modrinth'}
+                      </span>
+                    )}
+                    {!file.url && <span className="tag orange">仅百科页</span>}
+                  </span>
+                  <span className="vr-sub">
+                    {file.mcVersions.join(' / ') || '版本未知'}
+                    {file.loaders.length > 0 && ` · ${file.loaders.join('/')}`}
+                    {file.size > 0 && ` · ${formatBytes(file.size)}`}
+                    {file.uploadedAt && ` · ${file.uploadedAt.slice(0, 10)}`}
+                  </span>
+                </span>
+                <button
+                  className="btn sm primary"
+                  disabled={installing !== null}
+                  onClick={() => void install(file)}
+                >
+                  <Icon name={file.url ? 'download' : 'external'} size={13} />
+                  {file.url ? (installing === file.id ? '下载中…' : '安装') : '百科页'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="panel-scroll" style={{ padding: '8px 16px 24px' }}>
+      <div className="panel-search" style={{ marginBottom: 12 }}>
+        <Icon name="search" size={14} />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="搜索 MC百科模组（例如 YUNG's API）"
+          spellCheck={false}
+        />
+      </div>
+      <div className="hint" style={{ marginBottom: 10, lineHeight: 1.8 }}>
+        输入模组名后选择条目，读取「Mod下载」文件表，并自动匹配 CurseForge / GitHub /
+        Modrinth 的同名文件。下载会直接落到服务器对应的 mods/ 或 plugins/ 目录。
+      </div>
+      {searching && (
+        <div className="center-state" style={{ minHeight: 100 }}>
+          <div className="spin" />
+          <div>正在搜索 MC百科…</div>
+        </div>
+      )}
+      {!searching && query.trim().length >= 2 && hits.length === 0 && (
+        <div className="panel-empty">没有搜到条目</div>
+      )}
+      <div style={{ display: 'grid', gap: 6 }}>
+        {hits.map((hit) => (
+          <button
+            key={hit.classId}
+            className="version-row"
+            style={{ textAlign: 'left' }}
+            onClick={() => void open(hit)}
+          >
+            <span className="dot stopped" />
+            <span className="vr-main">
+              <span className="vr-title">{hit.title}</span>
+              <span className="vr-sub">MC百科 class / {hit.classId}</span>
+            </span>
+            <Icon name="chevron-right" size={14} />
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }
 

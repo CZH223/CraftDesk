@@ -20,8 +20,21 @@ export type ServerKind =
 /** 代理端没有世界、没有 EULA、没有 server.properties，很多假设都不成立 */
 export const PROXY_KINDS: ServerKind[] = ['velocity', 'bungeecord', 'waterfall']
 
+/**
+ * 当前开放下载与识别的代理端。
+ *
+ * Waterfall / BungeeCord 暂时关闭：新建和导入都不再识别它们，只保留 Velocity。
+ * PROXY_KINDS 仍然保留三种，是为了让旧配置里的服务器还能被正确当作代理端读取，
+ * 不会因为类型变了就把它当成普通服务端。
+ */
+export const ENABLED_PROXY_KINDS: ServerKind[] = ['velocity']
+
 export function isProxyKind(kind: ServerKind | string): boolean {
   return PROXY_KINDS.includes(kind as ServerKind)
+}
+
+export function isEnabledProxyKind(kind: ServerKind | string): boolean {
+  return ENABLED_PROXY_KINDS.includes(kind as ServerKind)
 }
 
 /** 一个受管理的服务器配置（持久化） */
@@ -231,6 +244,80 @@ export interface MapPlayerPosition {
   dimension: string
 }
 
+/** 地图右侧玩家面板里的一格物品；潜影盒 / 收纳袋会带 container */
+export interface PlayerItem {
+  slot: number
+  /** 去掉 minecraft: 前缀的物品 id */
+  id: string
+  count: number
+  /** 主进程懒加载后的物品图标 data URL */
+  icon?: string | null
+  /** 潜影盒 / 收纳袋内容 */
+  container?: PlayerItem[] | null
+}
+
+/** 从 playerdata 的最近一次保存 + Mojang 资料拼出的玩家档案 */
+export interface PlayerProfile {
+  name: string
+  /** 服务端实际使用的 UUID（离线服通常是离线 UUID） */
+  uuid: string
+  /** true 正版 / false 名字在 Mojang 不存在 / null 查询失败 */
+  premium: boolean | null
+  /** Mojang 的正版 UUID；离线服里可能和上面的 uuid 不同 */
+  premiumUuid: string | null
+  /** 全身皮肤渲染 data URL */
+  skin: string | null
+  xpLevel: number
+  xpTotal: number
+  health: number
+  food: number
+  dimension: string
+  /** playerdata 的 mtime；null 表示没找到存档 */
+  savedAt: number | null
+  inventory: PlayerItem[]
+  /** 头盔 / 胸甲 / 护腿 / 靴子 */
+  armor: PlayerItem[]
+  offhand: PlayerItem | null
+  enderItems: PlayerItem[]
+  selectedSlot: number
+}
+
+export interface MapExportFile {
+  path: string
+  width: number
+  height: number
+  regions: number
+}
+
+export interface MapExportResult {
+  canceled: boolean
+  dir?: string
+  files: MapExportFile[]
+  components: number
+  failures: number
+  ms: number
+}
+
+export interface MapExportEstimate {
+  targets: { width: number; height: number; regions: number }[]
+  /** 最大的一张图的宽高 */
+  width: number
+  height: number
+  totalPixels: number
+  /** 按地图 PNG 常见压缩率估算的范围 */
+  estimatedBytesLow: number
+  estimatedBytesHigh: number
+  warning: string | null
+}
+
+export interface MapExportProgress {
+  serverId: string
+  dim: string
+  done: number
+  total: number
+  label: string
+}
+
 export interface MapTileResult {
   /** data:image/png;base64,... */
   png: string
@@ -314,6 +401,13 @@ export interface PluginInfo {
   dependencies: string[]
   /** 所在目录（相对根目录），用于分组显示 */
   group: string
+  /** jar 内声明的加载器（Fabric / Forge / NeoForge / Bukkit…） */
+  loaders: ExtensionLoader[]
+  /**
+   * 和当前服务端的加载器不匹配。比如 Forge 服 mods/ 里混进了纯 Fabric 模组：
+   * 它不会被加载，所以它的依赖关系必须忽略，否则会报出一堆 Fabric API 缺失。
+   */
+  loaderMismatch: boolean
 
   // ---- 依赖关系 ----
   /** 硬前置：缺了它这个扩展根本不会加载 */
@@ -374,6 +468,17 @@ export interface RelationIssue {
  * - unknown 描述文件里没写，判断不了（Forge / NeoForge 系）
  */
 export type ModSide = 'both' | 'client' | 'server' | 'unknown'
+
+/** jar 里声明的加载器；混装 jar 可能同时有多个 */
+export type ExtensionLoader =
+  | 'fabric'
+  | 'forge'
+  | 'neoforge'
+  | 'bukkit'
+  | 'bungee'
+  | 'velocity'
+  | 'mcdr'
+  | 'unknown'
 
 /** 一个可编辑的配置文件 */
 export interface ConfigFile {
@@ -807,7 +912,13 @@ export interface Topology {
 
 // ---------------------------------------------------------------- 统一的扩展源结果
 
-export type RegistrySource = 'modrinth' | 'hangar' | 'spigot' | 'curseforge' | 'mcdr'
+export type RegistrySource =
+  | 'modrinth'
+  | 'hangar'
+  | 'spigot'
+  | 'curseforge'
+  | 'mcdr'
+  | 'mcmod'
 
 /**
  * 各个下载源的搜索结果统一成这个形状。
@@ -831,6 +942,114 @@ export interface RegistryHit {
   installable: boolean
   /** 不能装的原因，会显示在按钮的提示里 */
   blockedReason?: string
+}
+
+/** 星图里「下载已选 / 补齐全缺失」时，让主进程去查最新适配版本 */
+export interface LatestModRequest {
+  /** 依赖声明里的模组 id，通常就是 Modrinth 的 slug */
+  id: string
+  name: string
+  kind: 'mod' | 'plugin'
+}
+
+// ---------------------------------------------------------------- MC百科关系
+
+export type McmodRelationCategory = 'required' | 'extends' | 'linked' | 'center'
+
+/** MC百科星图里的一个模组（只保留和中心直接相连的那一圈） */
+export interface McmodRelationNode {
+  id: number
+  /** MC百科的 class id；点「打开百科」时用 */
+  classId: string | null
+  /** MC百科上的显示名，通常是「中文名 (English Name)」 */
+  name: string
+  /** 从括号里抽出的英文名，用来和本地 jar 的 name/id 匹配 */
+  englishName: string
+  category: McmodRelationCategory
+}
+
+/** MC百科「相关链接」里的 CurseForge / GitHub / Modrinth 地址 */
+export interface McmodExternalLink {
+  provider: 'curseforge' | 'github' | 'modrinth' | 'other'
+  url: string
+  label: string
+  /** 例如 CurseForge: NeoForge/Forge → ['NeoForge','Forge'] */
+  loaders?: string[]
+}
+
+export interface McmodRelations {
+  classId: string
+  title: string
+  pageUrl: string
+  centerId: number
+  /** 中心 + 直接关系 */
+  nodes: McmodRelationNode[]
+  /** 只包含和中心直接相连的边 */
+  links: { from: number; to: number }[]
+  /** 模组页上的 CurseForge / GitHub / Modrinth 外部链接 */
+  externalLinks: McmodExternalLink[]
+}
+
+export interface McmodRelationRequest {
+  /** 本地模组 id，通常就是 Modrinth 的 slug */
+  id: string
+  /** 本地模组显示名 */
+  name: string
+}
+
+export interface McmodSearchHit {
+  classId: string
+  title: string
+}
+
+/** MC百科「Mod下载」页里的一行文件 */
+export interface McmodDownloadFile {
+  id: string
+  fileName: string
+  mcVersions: string[]
+  loaders: string[]
+  size: number
+  uploadedAt: string
+  /** 能从 CurseForge / GitHub / Modrinth 匹配到同名文件时的直链 */
+  url?: string
+  source?: 'curseforge' | 'github' | 'modrinth'
+  /** 匹配不到直链时的外部项目页 / MC百科下载页 */
+  pageUrl: string
+}
+
+export interface McmodDownloadList {
+  classId: string
+  title: string
+  pageUrl: string
+  files: McmodDownloadFile[]
+}
+
+/** 星图里判断「这个百科条目在当前服务器上有没有可用版本」 */
+export type ModCompat = 'ok' | 'bad' | 'unknown'
+
+export interface ModCompatItem {
+  /** 星图节点的唯一键 */
+  key: string
+  id: string
+  name: string
+  kind: 'mod' | 'plugin'
+}
+
+export interface PluginCounts {
+  plugins: number
+  mods: number
+}
+
+/** 一个缺失模组在 Modrinth 上解析出的结果；version 为 null 表示没有适配当前服务端的版本 */
+export interface LatestModResult {
+  projectId: string
+  slug: string
+  title: string
+  version: RegistryVersion | null
+  /** 这个版本从哪个源找到的 */
+  source?: 'modrinth' | 'curseforge' | 'github'
+  /** 外部下载页，失败时可以提示用户手动打开 */
+  sourceUrl?: string
 }
 
 /** 统一的可安装版本 */

@@ -1,7 +1,15 @@
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { gunzipSync, inflateSync } from 'node:zlib'
-import { nbtCompound, nbtNumber, parseChunkNbt, parseNbt, unpackLongs, type ChunkNbt } from './nbt'
+import {
+  nbtArray,
+  nbtCompound,
+  nbtNumber,
+  parseChunkNbt,
+  parseNbt,
+  unpackLongs,
+  type ChunkNbt
+} from './nbt'
 import { encodePng } from './png'
 import { parsePropertiesFile } from './properties'
 import type {
@@ -28,9 +36,31 @@ export const REGION_PX = 512
 const HEIGHT_BIAS = 128
 
 const DIMENSIONS: { id: MapDimensionInfo['id']; label: string; rel: string[] }[] = [
-  { id: 'overworld', label: '主世界', rel: ['region'] },
-  { id: 'nether', label: '下界', rel: [join('DIM-1', 'region'), join('world_nether', 'region')] },
-  { id: 'end', label: '末地', rel: [join('DIM1', 'region'), join('world_the_end', 'region')] }
+  {
+    id: 'overworld',
+    label: '主世界',
+    // 26.x 起世界数据按维度放在 world/dimensions/<namespace>/<dimension>/region；
+    // 旧版本仍然是 world/region
+    rel: [join('dimensions', 'minecraft', 'overworld', 'region'), 'region']
+  },
+  {
+    id: 'nether',
+    label: '下界',
+    rel: [
+      join('dimensions', 'minecraft', 'the_nether', 'region'),
+      join('DIM-1', 'region'),
+      join('world_nether', 'region')
+    ]
+  },
+  {
+    id: 'end',
+    label: '末地',
+    rel: [
+      join('dimensions', 'minecraft', 'the_end', 'region'),
+      join('DIM1', 'region'),
+      join('world_the_end', 'region')
+    ]
+  }
 ]
 
 async function exists(p: string): Promise<boolean> {
@@ -111,13 +141,19 @@ function largestClusterBounds(regions: MapRegionRef[]): MapBounds | null {
   }
 }
 
-/** level.dat 里的出生点（gzip 的 NBT） */
+/** level.dat 里的出生点（gzip 的 NBT）；兼容旧版 SpawnX/Z 和 26.x 的 spawn.pos */
 async function readSpawn(worldDir: string): Promise<{ x: number; z: number } | null> {
   try {
     const raw = await fs.readFile(join(worldDir, 'level.dat'))
     const data = nbtCompound(parseNbt(gunzipSync(raw)).Data)
-    const x = nbtNumber(data.SpawnX)
-    const z = nbtNumber(data.SpawnZ)
+    const oldX = nbtNumber(data.SpawnX)
+    const oldZ = nbtNumber(data.SpawnZ)
+    if (Number.isFinite(oldX) && Number.isFinite(oldZ)) return { x: oldX, z: oldZ }
+
+    const spawn = nbtCompound(data.spawn)
+    const pos = nbtArray(spawn.pos)
+    const x = nbtNumber(pos[0])
+    const z = nbtNumber(pos[2])
     if (Number.isFinite(x) && Number.isFinite(z)) return { x, z }
   } catch {
     /* 没有 level.dat 或格式不认识 */
@@ -789,5 +825,39 @@ export async function renderRegionFile(path: string, step = 1): Promise<RegionRe
     explored,
     chunks,
     avg
+  }
+}
+
+export interface AllStepsRender {
+  /** step → PNG，一次解析同时产出 1 / 2 / 3 / 4 四种分辨率 */
+  pngs: Map<number, Buffer>
+  heights: Uint16Array
+  explored: number
+  chunks: number
+  avg: RGB | null
+}
+
+/**
+ * 一次解析 .mca，产出所有缩放级别的 PNG。
+ *
+ * 之前每个 step 都独立解析一遍 region：从 1× 缩到 4× 时，视口里每块 region
+ * 都要重新解压 1024 个区块，切一次缩放就能卡上几十秒。解析才是瓶颈，
+ * 降采样和 PNG 编码便宜得多，所以基础渲染只做一次，其余三档从同一份
+ * RGBA 直接生成并写盘。
+ */
+export function renderRegionAllSteps(buf: Buffer): AllStepsRender {
+  const base = renderRegionFromBuffer(buf, 1)
+  const pngs = new Map<number, Buffer>()
+  for (const step of [1, 2, 3, 4]) {
+    const rgba = step === 1 ? base.rgba : downsampleRegion(base.rgba, step)
+    const px = Math.ceil(REGION_PX / step)
+    pngs.set(step, encodePng(rgba, px, px))
+  }
+  return {
+    pngs,
+    heights: base.heights,
+    explored: base.explored,
+    chunks: base.chunks,
+    avg: base.avg
   }
 }

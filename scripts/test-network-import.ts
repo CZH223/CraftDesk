@@ -12,6 +12,7 @@
 import { promises as fs } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseBungeeServers, scanNetworkImport } from '../src/main/network'
+import { classifyJar } from '../src/main/importer'
 import type { ServerConfig } from '../src/shared/types'
 
 let pass = 0
@@ -29,7 +30,12 @@ const STATUS_LABEL: Record<string, string> = {
 }
 
 function unitTests(): void {
-  console.log('══ BungeeCord 的 config.yml 后端列表 ══')
+  console.log('══ 代理端识别：暂时只保留 Velocity ══')
+  check('Velocity 仍然能识别', classifyJar('velocity-3.4.0-SNAPSHOT-592.jar') === 'velocity')
+  check('Waterfall 不再识别', classifyJar('waterfall-1.20-547.jar') === 'unknown')
+  check('BungeeCord 不再识别', classifyJar('BungeeCord.jar') === 'unknown')
+
+  console.log('\n══ BungeeCord 的 config.yml 后端列表（解析器保留，仅用于旧数据）══')
   const yml = `
 # 注释行
 listeners:
@@ -104,7 +110,7 @@ async function realProxy(dir: string, storePath: string): Promise<void> {
     )
   }
 
-  check('认出了这是代理端', ['velocity', 'bungeecord', 'waterfall'].includes(plan.proxy.kind))
+  check('认出了这是 Velocity 代理端', plan.proxy.kind === 'velocity')
   check('配置里读到了后端', plan.backends.length > 0, `${plan.backends.length} 个`)
   check(
     '每个后端都有别名和端口',

@@ -4,6 +4,7 @@ import { Store } from './store'
 import { dataDirNextTo, pickDataDir } from './portable'
 import { ServerManager } from './server-manager'
 import { registerIpc } from './ipc'
+import { shutdownMapWorkers } from './mapWorkers'
 
 let win: BrowserWindow | null = null
 let store: Store | null = null
@@ -66,8 +67,11 @@ function createWindow(): void {
   win = new BrowserWindow({
     width: 1440,
     height: 900,
-    // 任务栏 / Alt-Tab 里的图标。打包后走 electron-builder 的 win.icon，这里是开发期
-    icon: join(__dirname, '../../build/icon.png'),
+    // 任务栏 / Alt-Tab 里的图标。打包后 exe 旁边会带一份 ico（extraResources），
+    // 开发时用项目里的多尺寸 ico，避免 500px PNG 缩到 16px 时发糊。
+    icon: app.isPackaged
+      ? join(process.resourcesPath, 'icon.ico')
+      : join(__dirname, '../../build/icon.ico'),
     minWidth: 1080,
     minHeight: 660,
     show: false,
@@ -143,6 +147,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', async () => {
   isQuitting = true
+  shutdownMapWorkers()
   await manager?.dispose()
   await store?.writeNow()
 })

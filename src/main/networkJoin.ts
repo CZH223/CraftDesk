@@ -13,6 +13,8 @@ import { getProperty, parsePropertiesFile, writeProperties } from './properties'
 import { readProxyFile, writeProxyFields, writeProxyServers } from './proxyConfig'
 import { modrinthVersions } from './registry'
 import { downloadFile } from './downloader'
+import { httpFetch } from './http'
+import { proxyJvmArgs, resolveProxyFor } from './netProxy'
 
 /**
  * 把一台服务端接入某个跨服网络（代理端）。
@@ -403,7 +405,7 @@ interface GithubAsset {
 }
 
 async function githubJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, {
+  const res = await httpFetch(url, {
     headers: { 'User-Agent': UA, Accept: 'application/vnd.github+json' }
   })
   if (!res.ok) throw new Error(`GitHub 接口返回 HTTP ${res.status}`)
@@ -622,9 +624,12 @@ async function ensureFabricLoader(
       await downloadFile(FABRIC_INSTALLER_URL, installer)
     }
     emit?.(`正在更新 Fabric Loader ${before} → ${PROXYFORWARD_MIN_LOADER}…`, 0, 0)
+    // Fabric 安装器同样要联网拉 Loader，独立 Java 进程不会继承 Electron 代理
+    const proxyArgs = proxyJvmArgs(await resolveProxyFor(FABRIC_INSTALLER_URL))
     await execFileAsync(
       opts.javaPath || 'java',
       [
+        ...proxyArgs,
         '-jar',
         installer,
         'server',

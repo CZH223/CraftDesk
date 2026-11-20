@@ -18,6 +18,7 @@ import {
   downsampleRegion,
   inspectWorld,
   REGION_PX,
+  renderRegionAllSteps,
   renderRegionFromBuffer,
   renderRegionFile
 } from '../src/main/worldmap'
@@ -145,6 +146,16 @@ const stepped = renderRegionFromBuffer(Buffer.alloc(0), 4)
 check('空 region 按 step 缩小后仍是透明图', stepped.rgba.length, 128 * 128 * 4)
 check('空 region 没有平均色', stepped.avg, null)
 
+// 一次解析产出四档：切缩放时不再重复读 .mca
+const allSteps = renderRegionAllSteps(Buffer.alloc(0))
+check('一次解析产出 1/2/3/4 四档', [...allSteps.pngs.keys()], [1, 2, 3, 4])
+for (const s of [1, 2, 3, 4]) {
+  const decodedStep = decodePng(allSteps.pngs.get(s)!)
+  const side = Math.ceil(REGION_PX / s)
+  check(`step ${s} PNG 尺寸`, [decodedStep.w, decodedStep.h], [side, side])
+}
+check('四档共用同一份高度图', allSteps.heights.length, REGION_PX * REGION_PX)
+
 console.log('\n══ 损坏/空 region 不崩 ══')
 const empty = renderRegionFromBuffer(Buffer.alloc(0))
 check('空文件：没有地表', empty.explored, 0)
@@ -170,6 +181,43 @@ async function scanTest(): Promise<void> {
   check('适应范围排除了远处的孤立 region', [core.minX, core.maxX, core.minZ, core.maxZ], [0, 1023, 0, 1023])
   check('读不到 level.dat 时 spawn 为 null', info.spawn, null)
   await fs.rm(root, { recursive: true, force: true })
+
+  console.log('\n══ 26.x 新世界布局 ══')
+  const root2 = join(process.cwd(), 'tmp', 'worldmap-scan-new')
+  await fs.rm(root2, { recursive: true, force: true })
+  await fs.mkdir(
+    join(root2, 'world', 'dimensions', 'minecraft', 'overworld', 'region'),
+    { recursive: true }
+  )
+  await fs.mkdir(
+    join(root2, 'world', 'dimensions', 'minecraft', 'the_nether', 'region'),
+    { recursive: true }
+  )
+  await fs.writeFile(join(root2, 'server.properties'), 'level-name=world\n')
+  await fs.writeFile(
+    join(root2, 'world', 'dimensions', 'minecraft', 'overworld', 'region', 'r.0.0.mca'),
+    ''
+  )
+  await fs.writeFile(
+    join(root2, 'world', 'dimensions', 'minecraft', 'overworld', 'region', 'r.1.0.mca'),
+    ''
+  )
+  await fs.writeFile(
+    join(root2, 'world', 'dimensions', 'minecraft', 'the_nether', 'region', 'r.0.0.mca'),
+    ''
+  )
+  const info2 = await inspectWorld(root2, join(root2, 'server.properties'))
+  check(
+    '找到 dimensions/.../overworld/region',
+    info2.dimensions.find((d) => d.id === 'overworld')?.regions.length,
+    2
+  )
+  check(
+    '找到 dimensions/.../the_nether/region',
+    info2.dimensions.find((d) => d.id === 'nether')?.regions.length,
+    1
+  )
+  await fs.rm(root2, { recursive: true, force: true })
 }
 
 async function realRegion(path: string): Promise<void> {

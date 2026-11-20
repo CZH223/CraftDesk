@@ -4,6 +4,12 @@ import { readRconConfig, RconClient } from './rcon'
 import type { MapPlayerPosition, ServerConfig } from '../shared/types'
 
 /**
+ * 外部启动的服务端：RCON 没开时，至少从 latest.log 的登录 / 退出事件里
+ * 认出谁在线。登录行通常带初始坐标，可以在地图上先标一个位置；真正实时的
+ * 坐标仍然需要 RCON 或 CraftDesk 自己管理的 stdin。
+ */
+
+/**
  * 实时玩家位置。
  *
  * 服务端没有「查所有人坐标」的接口，但控制台可以执行
@@ -80,6 +86,70 @@ export function parseListOutput(text: string): string[] {
     .split(',')
     .map((s) => s.trim())
     .filter((n) => /^[A-Za-z0-9_]{1,16}$/.test(n))
+}
+
+interface LogOnline {
+  name: string
+  x?: number
+  y?: number
+  z?: number
+}
+
+/** 读 latest.log 的尾部；从最近一次服务器启动开始解析，避免把上个会话的玩家算进来 */
+async function readLogTail(core: string): Promise<string> {
+  try {
+    const file = join(core, 'logs', 'latest.log')
+    const fh = await fs.open(file, 'r')
+    try {
+      const st = await fh.stat()
+      const len = Math.min(st.size, 4 * 1024 * 1024)
+      const buf = Buffer.alloc(len)
+      await fh.read(buf, 0, len, st.size - len)
+      const text = buf.toString('utf-8')
+      const start = text.lastIndexOf('Starting minecraft server version')
+      return start >= 0 ? text.slice(start) : text
+    } finally {
+      await fh.close()
+    }
+  } catch {
+    return ''
+  }
+}
+
+/** 从日志行里重建在线名单；login 行带坐标，join/leave 维护在线状态 */
+export function parseLogOnline(text: string): LogOnline[] {
+  const online = new Map<string, LogOnline>()
+  for (const line of text.split(/\r?\n/)) {
+    if (/Stopping (?:the )?server/.test(line)) {
+      online.clear()
+      continue
+    }
+    const login = line.match(
+      /([A-Za-z0-9_]{1,16})\[[^\]]*\] logged in with entity id \d+ at \(([-\d.]+), ([-\d.]+), ([-\d.]+)\)/
+    )
+    if (login) {
+      online.set(login[1], {
+        name: login[1],
+        x: Number(login[2]),
+        y: Number(login[3]),
+        z: Number(login[4])
+      })
+      continue
+    }
+    const joined = line.match(/: ([A-Za-z0-9_]{1,16}) joined the game/)
+    if (joined && !online.has(joined[1])) online.set(joined[1], { name: joined[1] })
+    const left = line.match(/: ([A-Za-z0-9_]{1,16}) (?:left the game|lost connection)/)
+    if (left) online.delete(left[1])
+    const kicked = line.match(/Disconnecting ([A-Za-z0-9_]{1,16}) /)
+    if (kicked) online.delete(kicked[1])
+  }
+  return [...online.values()]
+}
+
+/** 只给玩家列表用的在线名字（不需要坐标） */
+export async function logOnlineNames(core: string): Promise<string[]> {
+  if (!core) return []
+  return parseLogOnline(await readLogTail(core)).map((p) => p.name)
 }
 
 async function readUuidMap(playersDir: string, names: string[]): Promise<Map<string, string>> {
@@ -200,12 +270,35 @@ async function pollRcon(
   }
 }
 
+/** 外部启动且没有 RCON 时：从日志里的登录事件得到在线名单与初始坐标 */
+async function pollLog(coreDir: string, playersDir: string): Promise<MapPlayerPosition[]> {
+  if (!coreDir) return []
+  const online = parseLogOnline(await readLogTail(coreDir))
+  const names = online.map((p) => p.name)
+  const uuids = await readUuidMap(playersDir, names)
+  const out: MapPlayerPosition[] = []
+  for (const p of online) {
+    if (p.x === undefined || p.y === undefined || p.z === undefined) continue
+    out.push({
+      name: p.name,
+      uuid: uuids.get(p.name.toLowerCase()),
+      x: p.x,
+      y: p.y,
+      z: p.z,
+      // 登录行没有维度信息；绝大多数情况是主世界。开 RCON 后才会有实时维度
+      dimension: 'overworld'
+    })
+  }
+  return out
+}
+
 /** 缓存 3 秒；同一台服务器同时只轮询一次 */
 export async function getPlayerPositions(
   source: PositionSource,
   cfg: ServerConfig,
   playersDir: string,
-  propertiesPath = ''
+  propertiesPath = '',
+  coreDir = ''
 ): Promise<MapPlayerPosition[]> {
   const hit = cache.get(cfg.id)
   if (hit && Date.now() - hit.at < CACHE_TTL) return hit.list
@@ -214,22 +307,28 @@ export async function getPlayerPositions(
   if (running) return running
 
   // 开了 RCON 就优先走 RCON：MCDR 托管时 stdin 是 MCDR 的输入，不一定能到服务端；
-  // RCON 是直接连服务端的，稳定得多。
+  // RCON 是直接连服务端的，稳定得多。没开 RCON / 外部启动时退到日志登录位置。
   const rconReady = propertiesPath ? await readRconConfig(propertiesPath) : null
-  const task = (
-    rconReady
-      ? pollRcon(propertiesPath, playersDir)
-      : source.isRunning(cfg.id)
-        ? pollStdin(source, cfg, playersDir)
-        : Promise.resolve([])
-  )
+  let task: Promise<MapPlayerPosition[]>
+  if (rconReady) {
+    task = pollRcon(propertiesPath, playersDir).catch(() =>
+      coreDir ? pollLog(coreDir, playersDir) : []
+    )
+  } else if (source.isRunning(cfg.id)) {
+    task = pollStdin(source, cfg, playersDir).then((list) =>
+      list.length || !coreDir ? list : pollLog(coreDir, playersDir)
+    )
+  } else {
+    task = coreDir ? pollLog(coreDir, playersDir) : Promise.resolve([])
+  }
+  const finalTask = task
     .then((list) => {
       cache.set(cfg.id, { at: Date.now(), list })
       return list
     })
     .finally(() => inFlight.delete(cfg.id))
-  inFlight.set(cfg.id, task)
-  return task
+  inFlight.set(cfg.id, finalTask)
+  return finalTask
 }
 
 export function forgetPositions(id: string): void {

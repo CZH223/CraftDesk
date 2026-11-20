@@ -18,6 +18,7 @@ import {
   normalizeDimension,
   parseDataGetLine,
   parseListOutput,
+  parseLogOnline,
   type PositionSource
 } from '../src/main/positions'
 import {
@@ -66,6 +67,31 @@ check('维度名归一化', [normalizeDimension('minecraft:overworld'), normaliz
   'overworld',
   'end'
 ])
+
+console.log('\n══ 外部服务端：从 latest.log 重建在线玩家 ══')
+const externalLog = [
+  '[3110月2026 16:43:44.260] [Server thread/INFO] [net.minecraft.server.dedicated.DedicatedServer/]: Done (0.277s)! For help, type "help"',
+  '[3110月2026 16:48:50.141] [User Authenticator #1/INFO] [net.minecraft.server.network.ServerLoginPacketListenerImpl/]: UUID of player QPZGG is 2c116c57-92f7-4781-84ca-927d8ef3eae0',
+  '[3110月2026 16:48:50.188] [Server thread/INFO] [net.minecraft.server.network.ServerLoginPacketListenerImpl/]: Disconnecting QPZGG (/127.0.0.1:52511): You are not white-listed on this server!',
+  '[3110月2026 16:48:50.189] [Server thread/INFO] [net.minecraft.server.network.ServerLoginPacketListenerImpl/]: QPZGG (/127.0.0.1:52511) lost connection: You are not white-listed on this server!',
+  '[3110月2026 16:50:17.030] [Server thread/INFO] [net.minecraft.server.players.PlayerList/]: QPZGG[/127.0.0.1:62554] logged in with entity id 15 at (22.5, 80.0, -13.5)',
+  '[3110月2026 16:50:17.042] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: System chat: QPZGG joined the game',
+  '[3110月2026 16:50:40.000] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: System chat: Steve joined the game',
+  '[3110月2026 16:51:00.000] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: Steve left the game'
+].join('\r\n')
+check('被白名单踢掉后重新登录', parseLogOnline(externalLog), [
+  { name: 'QPZGG', x: 22.5, y: 80, z: -13.5 }
+])
+check(
+  '没有登录坐标的 join 也保留在线',
+  parseLogOnline('System chat: Alex joined the game'),
+  [{ name: 'Alex' }]
+)
+check(
+  '正常停服后清空在线名单',
+  parseLogOnline('System chat: Alex joined the game\nStopping the server'),
+  []
+)
 
 class FakeServer implements PositionSource {
   lines: { text: string }[] = []

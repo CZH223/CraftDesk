@@ -11,8 +11,8 @@ import { readProxyMeta } from './proxy'
 export function classifyJar(fileName: string): ServerKind {
   const n = fileName.toLowerCase()
   if (n.includes('velocity')) return 'velocity'
-  if (n.includes('waterfall')) return 'waterfall'
-  if (n.includes('bungeecord') || n.includes('bungee')) return 'bungeecord'
+  // Waterfall / BungeeCord 暂时关闭识别：它们的目录按普通未知目录处理
+  if (n.includes('waterfall') || n.includes('bungeecord') || n.includes('bungee')) return 'unknown'
   if (n.includes('purpur')) return 'purpur'
   if (n.includes('paper')) return 'paper'
   if (n.includes('spigot')) return 'spigot'
@@ -75,10 +75,12 @@ function scoreJar(name: string, hasFabricMarker: boolean): number {
   if (lower.includes('fabric-server-launch') || lower.includes('fabric-server-launcher')) return 120
   if (lower.includes('fabric') && hasFabricMarker) return 115
   if (lower === 'server.jar') return 100
-  // 代理端核心，名字里一定带版本号，比如 velocity-3.5.0-SNAPSHOT-592.jar
+  // 代理端核心，名字里一定带版本号，比如 velocity-3.5.0-SNAPSHOT-592.jar。
+  // Waterfall / BungeeCord 暂时关闭识别，不参与核心打分。
   if (lower.includes('velocity')) return 95
-  if (lower.includes('waterfall')) return 94
-  if (lower.includes('bungeecord') || lower.includes('bungee')) return 92
+  if (lower.includes('waterfall') || lower.includes('bungeecord') || lower.includes('bungee')) {
+    return -50
+  }
   if (lower.includes('paper')) return 90
   if (lower.includes('purpur')) return 90
   if (lower.includes('neoforge')) return 88

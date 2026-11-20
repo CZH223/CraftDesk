@@ -1,7 +1,7 @@
 {
   "name": "craftdesk",
   "productName": "CraftDesk",
-  "version": "1.2.10",
+  "version": "1.2.29-preview3",
   "description": "Minecraft 多服务器管理器（Windows 桌面端）",
   "main": "./out/main/index.js",
   "author": "CraftDesk",
@@ -30,13 +30,13 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "dist": "electron-vite build && electron-builder --win --x64",
+    "dist": "node scripts/patch-builder.cjs && electron-vite build && electron-builder --win --x64",
     "app": "node scripts/run-app.mjs",
     "app:test": "node scripts/run-app.mjs --isolated",
     "app:stop": "node scripts/run-app.mjs --stop",
     "test": "node scripts/test-all.mjs",
     "test:all": "node scripts/test-all.mjs --all",
-    "dist:dir": "electron-vite build && electron-builder --win --dir --x64"
+    "dist:dir": "node scripts/patch-builder.cjs && electron-vite build && electron-builder --win --dir --x64"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -60,16 +60,24 @@
     },
     "files": [
       "out/**/*",
-      "build/icon.png",
       "package.json"
     ],
+    "asarUnpack": [
+      "out/main/**"
+    ],
+    "afterPack": "scripts/after-pack.mjs",
     "compression": "maximum",
     "electronLanguages": [
-      "zh-CN",
-      "en-US"
+      "zh-CN"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      }
     ],
     "win": {
-      "icon": "build/icon.png",
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "portable",

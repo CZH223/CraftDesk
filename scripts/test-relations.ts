@@ -87,6 +87,8 @@ function item(patch: Partial<PluginInfo>): PluginInfo {
     breaks: [],
     ranges: {},
     broken: false,
+    loaders: [],
+    loaderMismatch: false,
     requires: [],
     usedBy: [],
     ...patch
@@ -244,6 +246,24 @@ softDepends: [LuckPerms]
   buildRelations(missingOnly)
   check('真的缺失才算缺失', missingOnly[0].requires[0].state === 'missing')
   check('id 规范化（大小写 / 空格）', normId('  Fabric-API ') === 'fabric-api')
+
+  // Forge 服里的纯 Fabric 模组：不加载，依赖也不该算
+  const mismatchItems: PluginInfo[] = [
+    item({
+      id: 'fabric-only',
+      name: 'Fabric Only',
+      path: 'mods/fabric-only.jar',
+      loaders: ['fabric'],
+      loaderMismatch: true,
+      depends: ['fabric-api', 'creativecore'],
+      provides: ['some-lib']
+    }),
+    item({ id: 'consumer', name: 'Consumer', path: 'mods/consumer.jar', depends: ['some-lib'] })
+  ]
+  buildRelations(mismatchItems)
+  check('加载器不匹配的模组不产生依赖边', mismatchItems[0].requires.length === 0)
+  check('它提供的 id 不参与依赖满足', mismatchItems[1].requires[0].state === 'missing')
+  check('它也不会出现在别人的 usedBy 里', mismatchItems[0].usedBy.length === 0)
 
   console.log('\n══ 生效范围（在服务端有没有用）══')
   const def = parseFabricMeta('{"id":"x","version":"1","depends":{}}')!

@@ -3,7 +3,7 @@ import { Icon, type IconName } from '../components/Icon'
 import { Confirm, Modal } from '../components/ui'
 import { ModGraph } from '../components/ModGraph'
 import { useStore } from '../store'
-import { formatBytes } from '../utils'
+import { formatBytes, kindLabel } from '../utils'
 import type { PluginInfo, PluginKind, RelationEdge, ServerView } from '../../../shared/types'
 
 /**
@@ -57,8 +57,16 @@ const STATE_TEXT: Record<RelationEdge['state'], string> = {
   platform: '平台自带'
 }
 
-export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
+export function PluginsPanel({
+  server,
+  scope = 'all'
+}: {
+  server: ServerView
+  /** all = 兼容旧行为；mods/plugins = 右侧分栏后只显示对应类型 */
+  scope?: 'all' | 'mods' | 'plugins'
+}): JSX.Element {
   const toast = useStore((s) => s.toast)
+  const openRegistrySearch = useStore((s) => s.openRegistrySearch)
   const [items, setItems] = useState<PluginInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
@@ -85,9 +93,19 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
   const load = useCallback(async (): Promise<void> => {
     const res = await window.api.plugins.list(server.id)
     setLoading(false)
-    if (res.ok) setItems(res.data!)
-    else toast(res.error ?? '读取失败', 'error')
-  }, [server.id, toast])
+    if (res.ok) {
+      const list = res.data!
+      setItems(
+        scope === 'mods'
+          ? list.filter((i) => i.kind === 'mod')
+          : scope === 'plugins'
+            ? list.filter((i) => i.kind !== 'mod')
+            : list
+      )
+    } else {
+      toast(res.error ?? '读取失败', 'error')
+    }
+  }, [server.id, scope, toast])
 
   useEffect(() => {
     setLoading(true)
@@ -137,6 +155,7 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
   const problems = useMemo(() => {
     const hasIssue = (i: PluginInfo): boolean =>
       i.broken ||
+      i.loaderMismatch ||
       i.requires.some((e) => e.hard && (e.state === 'missing' || e.state === 'disabled'))
     const list = items.filter(hasIssue)
 
@@ -153,7 +172,8 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
       items: list,
       missing: [...missingIds],
       disabled: [...disabledIds],
-      broken: items.filter((i) => i.broken)
+      broken: items.filter((i) => i.broken),
+      mismatched: items.filter((i) => i.loaderMismatch)
     }
   }, [items])
 
@@ -336,6 +356,28 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
 
   return (
     <>
+      {/*
+        加载器不匹配优先提示：这些 jar 不会被当前服务端加载，
+        它们的依赖（比如 Forge 服里 Fabric 模组写的 fabric-api）也不该算数。
+      */}
+      {!loading && problems.mismatched.length > 0 && (
+        <div className="issue-bar" style={{ marginBottom: 8 }}>
+          <Icon name="alert" size={15} />
+          <span className="issue-text">
+            <b>{problems.mismatched.length} 个模组与当前加载器不兼容</b>
+            <span className="hint">
+              （{problems.mismatched.slice(0, 4).map((m) => m.name).join('、')}
+              {problems.mismatched.length > 4 ? ' 等' : ''}）
+              ：这是 {kindLabel(server.kind)} 服务端，不会加载它们，依赖关系已忽略。
+              建议删除或换成对应加载器的版本。
+            </span>
+          </span>
+          <button className="btn sm" onClick={() => setOnlyProblems((v) => !v)}>
+            {onlyProblems ? '看全部' : '只看有问题的'}
+          </button>
+        </div>
+      )}
+
       {/*
         依赖问题单独列一条：缺前置是「服务器起不来」最常见的原因，
         藏在几百个模组里没人找得到，所以放在最上面，点一下只看有问题的。
@@ -578,7 +620,11 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
 
         {!loading && items.length === 0 && (
           <div className="panel-empty">
-            没有找到任何插件或模组。
+            {scope === 'mods'
+              ? '没有找到模组。'
+              : scope === 'plugins'
+                ? '没有找到插件。'
+                : '没有找到任何插件或模组。'}
             <br />
             <br />
             把对应的文件放进目录，重启服务器即可生效：
@@ -643,7 +689,15 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
                       文件损坏
                     </span>
                   )}
-                  {p.side === 'client' && (
+                  {p.loaderMismatch && (
+                    <span
+                      className="tag red"
+                      title={`这个 jar 声明的是 ${p.loaders.join(' / ')}，${kindLabel(server.kind)} 服务端不会加载它；它的依赖关系已忽略`}
+                    >
+                      加载器不兼容
+                    </span>
+                  )}
+                  {p.side === 'client' && !p.loaderMismatch && (
                     <span
                       className="tag cyan"
                       title="模组自己声明只在客户端生效（fabric.mod.json 的 environment: client）——服务端加载了也不起作用"
@@ -929,11 +983,15 @@ export function PluginsPanel({ server }: { server: ServerView }): JSX.Element {
         <ModGraph
           items={items}
           focusPath={graphFocus}
-          serverName={server.name}
+          server={server}
           onClose={() => setGraphFocus(undefined)}
-          onPick={(path) => {
+          onRefresh={load}
+          onOpenDownload={(node) => {
             setGraphFocus(undefined)
-            jumpTo(path)
+            openRegistrySearch(
+              node.modId || node.name,
+              node.kind === 'plugin' ? 'plugin' : 'mod'
+            )
           }}
         />
       )}

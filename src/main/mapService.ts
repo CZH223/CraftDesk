@@ -6,8 +6,9 @@ import {
   inspectWorld,
   REGION_PX,
   regionAverageFromBuffer,
-  renderRegionFile
+  renderRegionAllSteps
 } from './worldmap'
+import { renderRegionInWorker } from './mapWorkers'
 import { encodePng } from './png'
 import type {
   MapOverview,
@@ -26,14 +27,36 @@ import type {
  *   - 同一块瓦片同时只渲染一次（界面滚动时会重复请求）。
  */
 
-const CACHE_VERSION = 3
+const CACHE_VERSION = 4
 const INFO_TTL = 5000
-const MAX_RENDER = 2
+const MAX_RENDER = 4
 
 const infoCache = new Map<string, { at: number; info: WorldMapInfo }>()
-const inFlight = new Map<string, Promise<MapTileResult>>()
+/** 同一个 region 的任意 step 共用一次渲染，避免 1× / 2× / 3× / 4× 各解析一遍 */
+const regionInFlight = new Map<string, Promise<{ ms: number; explored: number }>>()
 const overviewInFlight = new Map<string, Promise<MapOverview>>()
 const heightsCache = new Map<string, Buffer>()
+/** 已经转成 data URL 的瓦片，最近用过的放最后 */
+const tileUrlCache = new Map<string, string>()
+const MAX_TILE_URLS = 160
+
+function rememberTile(path: string, url: string): void {
+  if (tileUrlCache.has(path)) tileUrlCache.delete(path)
+  tileUrlCache.set(path, url)
+  while (tileUrlCache.size > MAX_TILE_URLS) {
+    const oldest = tileUrlCache.keys().next().value
+    if (!oldest) break
+    tileUrlCache.delete(oldest)
+  }
+}
+
+function recallTile(path: string): string | undefined {
+  const url = tileUrlCache.get(path)
+  if (!url) return undefined
+  tileUrlCache.delete(path)
+  tileUrlCache.set(path, url)
+  return url
+}
 
 let active = 0
 const waiting: (() => void)[] = []
@@ -113,65 +136,94 @@ export async function getMapTile(
   const meta = await regionMeta(dim.regionDir, rx, rz)
   if (!meta) throw new Error('这个区域还没有生成')
 
-  // 1 像素 = 1 / 2 / 3 / 4 个方块。四种分辨率各自缓存，切缩放不用重解析存档。
+  // 1 像素 = 1 / 2 / 3 / 4 个方块
   const s = Math.max(1, Math.min(4, Math.floor(step) || 1))
   const dir = join(cacheRoot(), cfg.id, dimId)
   const pngPath = join(dir, `${meta.base}.s${s}.png`)
   const hgtPath = join(dir, `${meta.base}.hgt`)
-  const key = pngPath
-
-  const running = inFlight.get(key)
-  if (running) return running
-
   const size = Math.ceil(REGION_PX / s)
-  const task = (async (): Promise<MapTileResult> => {
-    try {
-      const png = await fs.readFile(pngPath)
-      return { png: dataUrl(png), ms: 0, cached: true, explored: 0, step: s, size }
-    } catch {
-      /* 缓存不完整，重新渲染 */
-    }
 
-    return await withSlot(async () => {
-      // 排队期间别的请求可能已经渲染好了
-      try {
-        const png = await fs.readFile(pngPath)
-        return { png: dataUrl(png), ms: 0, cached: true, explored: 0, step: s, size }
-      } catch {
-        /* 继续渲染 */
-      }
+  // 1. 内存里已经有这张 data URL，直接返回
+  const memoryHit = recallTile(pngPath)
+  if (memoryHit) {
+    return { png: memoryHit, ms: 0, cached: true, explored: 0, step: s, size }
+  }
 
-      const started = Date.now()
-      const res = await renderRegionFile(meta.path, s)
-      const ms = Date.now() - started
+  // 2. 磁盘缓存
+  try {
+    const png = await fs.readFile(pngPath)
+    const url = dataUrl(png)
+    rememberTile(pngPath, url)
+    return { png: url, ms: 0, cached: true, explored: 0, step: s, size }
+  } catch {
+    /* 缓存不完整，重新渲染 */
+  }
 
-      await fs.mkdir(dir, { recursive: true })
-      const tmpPng = `${pngPath}.${process.pid}.tmp`
-      await fs.writeFile(tmpPng, res.png)
-      await fs.rename(tmpPng, pngPath)
-      // 高度图只在 1:1 时写：坐标读数和鼠标悬停都按完整分辨率查
-      if (s === 1) {
+  // 3. 同一个 region 只解析一次，一次产出全部四档
+  let render = regionInFlight.get(meta.path)
+  if (!render) {
+    const started = Date.now()
+    render = (async () => {
+      return await withSlot(async () => {
+        // 排队期间别的请求可能已经渲染好了
+        try {
+          const png = await fs.readFile(pngPath)
+          rememberTile(pngPath, dataUrl(png))
+          return { ms: 0, explored: 0 }
+        } catch {
+          /* 继续渲染 */
+        }
+
+        let res: {
+          pngs: Map<number, Buffer>
+          heights: Uint16Array
+          explored: number
+        }
+        try {
+          // CPU 重的解析放在 worker 池里，主进程只负责写盘
+          res = await renderRegionInWorker(meta.path)
+        } catch {
+          res = renderRegionAllSteps(await fs.readFile(meta.path))
+        }
+        await fs.mkdir(dir, { recursive: true })
+
+        for (const [renderStep, png] of res.pngs) {
+          const target = join(dir, `${meta.base}.s${renderStep}.png`)
+          const tmp = `${target}.${process.pid}.tmp`
+          await fs.writeFile(tmp, png)
+          await fs.rename(tmp, target)
+          rememberTile(target, dataUrl(png))
+        }
+
         const tmpHgt = `${hgtPath}.${process.pid}.tmp`
         await fs.writeFile(
           tmpHgt,
           Buffer.from(res.heights.buffer, res.heights.byteOffset, res.heights.byteLength)
         )
         await fs.rename(tmpHgt, hgtPath)
-      }
 
-      return {
-        png: dataUrl(res.png),
-        ms,
-        cached: false,
-        explored: res.explored,
-        step: s,
-        size: Math.ceil(REGION_PX / s)
-      }
-    })
-  })().finally(() => inFlight.delete(key))
+        return { ms: Date.now() - started, explored: res.explored }
+      })
+    })().finally(() => regionInFlight.delete(meta.path))
 
-  inFlight.set(key, task)
-  return task
+    regionInFlight.set(meta.path, render)
+  }
+
+  const renderInfo = await render
+  let url = recallTile(pngPath)
+  if (!url) {
+    const png = await fs.readFile(pngPath)
+    url = dataUrl(png)
+    rememberTile(pngPath, url)
+  }
+  return {
+    png: url,
+    ms: renderInfo.ms,
+    cached: renderInfo.ms === 0,
+    explored: renderInfo.explored,
+    step: s,
+    size
+  }
 }
 
 /**
@@ -368,8 +420,9 @@ export async function getMapHeight(
 /** 清掉一台服务器的地图缓存（「刷新」按钮用） */
 export async function clearMapCache(id: string): Promise<void> {
   infoCache.delete(id)
-  for (const key of [...inFlight.keys()]) if (key.includes(id)) inFlight.delete(key)
+  for (const key of [...regionInFlight.keys()]) if (key.includes(id)) regionInFlight.delete(key)
   for (const key of [...overviewInFlight.keys()]) if (key.includes(id)) overviewInFlight.delete(key)
   heightsCache.clear()
+  tileUrlCache.clear()
   await fs.rm(join(cacheRoot(), id), { recursive: true, force: true }).catch(() => {})
 }

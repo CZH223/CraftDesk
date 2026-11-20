@@ -1,26 +1,19 @@
 /**
  * 代理端下载源（联网）。
  *
- * 三家的来源都不一样，而且都踩过坑：
- * - Paper 的 v2 接口已经 sunset（返回 `{"ok":false,"error":"sunset"}`），
- *   Velocity / Waterfall 只能走 fill v3，构建里还混着一堆 `module:*` 的碎片；
- * - BungeeCord 没有版本号，只有构建号，地址在官方 Jenkins 上；
- * - 「能列出列表」和「能下下来」是两件事，所以最后真的下一个回来验一验。
+ * Waterfall / BungeeCord 暂时关闭下载与识别，只保留 Velocity：
+ * - Velocity 仍然走 PaperMC 的 fill v3；
+ * - 另外验证 Waterfall / BungeeCord 的版本表与下载入口确实被拒绝。
  *
  * npx esbuild scripts/test-proxy-download.ts --bundle --platform=node --format=cjs \
  *   --outfile=tmp/test-proxy-download.cjs && node tmp/test-proxy-download.cjs
  */
-import { promises as fs } from 'node:fs'
-import { join, resolve } from 'node:path'
 import {
-  downloadFile,
   flattenPaperVersions,
-  listBungeeVersions,
+  listVersions,
   listVelocityVersions,
-  listWaterfallVersions,
   resolveDownloadUrl
 } from '../src/main/downloader'
-import { ZipReader } from '../src/main/zip'
 
 let pass = 0
 let fail = 0
@@ -29,12 +22,16 @@ function check(label: string, ok: boolean, extra = ''): void {
   console.log(`  ${ok ? '✓' : '✗'} ${label}${extra ? `  ${extra}` : ''}`)
 }
 
-const TMP = join(resolve('.'), 'tmp', 'proxy-download')
+async function rejects(fn: () => Promise<unknown>): Promise<boolean> {
+  try {
+    await fn()
+    return false
+  } catch {
+    return true
+  }
+}
 
 async function main(): Promise<void> {
-  await fs.rm(TMP, { recursive: true, force: true })
-  await fs.mkdir(TMP, { recursive: true })
-
   console.log('版本表排序（纯函数）：')
   const flat = flattenPaperVersions({
     '4.0.0': ['4.2.1-SNAPSHOT', '4.2.0', '4.1.1-SNAPSHOT'],
@@ -56,48 +53,18 @@ async function main(): Promise<void> {
   check('带了 sha256', velUrl.checksum?.algo === 'sha256' && (velUrl.checksum?.value.length ?? 0) === 64)
   check('给了文件大小', (velUrl.size ?? 0) > 5 * 1024 * 1024, `${Math.round((velUrl.size ?? 0) / 1024 / 1024)} MB`)
 
-  console.log('\nWaterfall：')
-  const wf = await listWaterfallVersions()
-  check('拿到了版本列表', wf.length > 0, wf.map((v) => v.id).slice(0, 5).join(','))
-  const wfUrl = await resolveDownloadUrl('waterfall', wf[0].id)
-  check('解析出下载地址', wfUrl.url.includes('waterfall'), wfUrl.name)
+  console.log('\nWaterfall / BungeeCord 已关闭：')
+  check('Waterfall 版本表被拒绝', await rejects(() => listVersions('waterfall')))
+  check('BungeeCord 版本表被拒绝', await rejects(() => listVersions('bungeecord')))
   check(
-    '拿的是 server:default 而不是某个 module（碎片只有几 KB）',
-    (wfUrl.size ?? 0) > 5 * 1024 * 1024,
-    `${Math.round((wfUrl.size ?? 0) / 1024 / 1024)} MB`
+    'Waterfall 下载地址被拒绝',
+    await rejects(() => resolveDownloadUrl('waterfall', '1.20'))
+  )
+  check(
+    'BungeeCord 下载地址被拒绝',
+    await rejects(() => resolveDownloadUrl('bungeecord', 'latest'))
   )
 
-  console.log('\nBungeeCord（官方 Jenkins）：')
-  const bc = await listBungeeVersions()
-  check('拿到了构建号', bc.length > 0 && /^\d+$/.test(bc[0].id), bc.slice(0, 3).map((v) => v.id).join(','))
-  check(
-    '按构建号从新到旧',
-    bc.length < 2 || Number(bc[0].id) > Number(bc[bc.length - 1].id),
-    `${bc[0].id} → ${bc[bc.length - 1].id}`
-  )
-  const bcUrl = await resolveDownloadUrl('bungeecord', bc[0].id)
-  check('地址指向官方 Jenkins', bcUrl.url.startsWith('https://ci.md-5.net/'), bcUrl.url)
-  check('产物名是 BungeeCord.jar', bcUrl.name === 'BungeeCord.jar')
-  check('带了备选地址', (bcUrl.fallbacks?.length ?? 0) > 0, bcUrl.fallbacks?.[0] ?? '')
-  const latest = await resolveDownloadUrl('bungeecord', 'latest')
-  check('latest 也能解析', latest.url.includes('lastSuccessfulBuild'))
-
-  console.log('\n真的下一遍 BungeeCord（约 25 MB）：')
-  const dest = join(TMP, 'BungeeCord.jar')
-  const started = Date.now()
-  await downloadFile(bcUrl.url, dest, () => {})
-  const st = await fs.stat(dest)
-  check('文件下下来了', st.size > 20 * 1024 * 1024, `${Math.round(st.size / 1024 / 1024)} MB`)
-  check('耗时正常', Date.now() - started < 5 * 60 * 1000, `${((Date.now() - started) / 1000).toFixed(1)}s`)
-
-  const zip = await ZipReader.open(dest)
-  check('是一个能打开的 jar', zip !== null)
-  const names = zip?.list() ?? []
-  check('里面有 BungeeCord 的主类', names.includes('net/md_5/bungee/BungeeCord.class'))
-  check('里面有 bootstrap 的启动类', names.includes('net/md_5/bungee/Bootstrap.class'))
-  await zip?.close()
-
-  await fs.rm(TMP, { recursive: true, force: true })
   console.log(`\n通过 ${pass}，失败 ${fail}`)
   process.exit(fail ? 1 : 0)
 }

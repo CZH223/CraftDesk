@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
+import { httpFetch } from './http'
 
 /**
  * 玩家头像。
@@ -58,7 +59,7 @@ async function fetchHead(name: string, uuid: string | null): Promise<Buffer | nu
 
   for (const url of urls) {
     try {
-      const res = await fetch(url, {
+      const res = await httpFetch(url, {
         signal: AbortSignal.timeout(8000),
         headers: { 'User-Agent': 'CraftDesk/1.0 (Minecraft server manager)' }
       })

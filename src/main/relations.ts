@@ -94,6 +94,8 @@ export function buildRelations(items: PluginInfo[]): RelationIssue[] {
   // 优先取已启用的那个——否则会把「其实能跑」的情况报成缺前置
   const offer = new Map<string, PluginInfo[]>()
   for (const item of items) {
+    // 加载器不匹配的 jar 不会被服务端加载，也不能提供任何前置
+    if (item.loaderMismatch) continue
     const ids = new Set<string>()
     if (item.id) ids.add(normId(item.id))
     for (const p of item.provides) ids.add(normId(p))
@@ -115,6 +117,12 @@ export function buildRelations(items: PluginInfo[]): RelationIssue[] {
   }
 
   for (const item of items) {
+    if (item.loaderMismatch) {
+      // 它自己的 Fabric/Forge 依赖都不成立，全部忽略
+      item.requires = []
+      item.usedBy = []
+      continue
+    }
     const edges: RelationEdge[] = []
     const seen = new Set<string>()
 
@@ -161,6 +169,7 @@ export function buildRelations(items: PluginInfo[]): RelationIssue[] {
   // 反向索引：谁被依赖
   const usedBy = new Map<string, DependentRef[]>()
   for (const item of items) {
+    if (item.loaderMismatch) continue
     for (const edge of item.requires) {
       if (!edge.provider || edge.id === item.id) continue
       if (!usedBy.has(edge.provider)) usedBy.set(edge.provider, [])

@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { Icon } from '../components/Icon'
-import { Field, Switch } from '../components/ui'
+import { Field, MemoryRange, Switch } from '../components/ui'
 import { useStore } from '../store'
 import { DEFAULT_UI, WIDTH_LIMITS, clampWidth } from '../uiPrefs'
 import { requiredJavaMajor } from '../../../shared/javaHint'
@@ -18,6 +18,23 @@ export function SettingsView(): JSX.Element {
   const [scanning, setScanning] = useState(false)
   const [scanningPython, setScanningPython] = useState(false)
   const [installingMcdr, setInstallingMcdr] = useState(false)
+  /**
+   * 默认内存先在本地跟着滑条走，停顿一下再写配置。
+   * 否则拖动时每个像素都发一次 IPC，界面会等着一串请求回来的旧值。
+   */
+  const [defaultMemory, setDefaultMemory] = useState({ min: 1024, max: 4096 })
+  const memorySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (!settings) return
+    setDefaultMemory({ min: settings.defaultMemoryMin, max: settings.defaultMemoryMax })
+  }, [settings?.defaultMemoryMin, settings?.defaultMemoryMax])
+
+  useEffect(() => {
+    return () => {
+      if (memorySaveTimer.current) clearTimeout(memorySaveTimer.current)
+    }
+  }, [])
   const [info, setInfo] = useState<{
     version: string
     electron: string
@@ -125,6 +142,15 @@ export function SettingsView(): JSX.Element {
     const res = await window.api.settings.patch(p)
     if (res.ok) useStore.setState({ settings: res.data! })
     else toast(res.error ?? '保存失败', 'error')
+  }
+
+  const changeDefaultMemory = (value: { min: number; max: number }): void => {
+    setDefaultMemory(value)
+    if (memorySaveTimer.current) clearTimeout(memorySaveTimer.current)
+    memorySaveTimer.current = setTimeout(() => {
+      memorySaveTimer.current = null
+      void patch({ defaultMemoryMin: value.min, defaultMemoryMax: value.max })
+    }, 350)
   }
 
   if (!settings) return <div className="center-state">正在读取设置…</div>
@@ -435,24 +461,11 @@ export function SettingsView(): JSX.Element {
 
         <div className="form-section">
           <h3>新建服务器的默认值</h3>
-          <Field label="默认最小内存" hint="单位 MB">
-            <input
-              className="input"
-              type="number"
-              min={128}
-              step={256}
-              value={settings.defaultMemoryMin}
-              onChange={(e) => void patch({ defaultMemoryMin: Number(e.target.value) })}
-            />
-          </Field>
-          <Field label="默认最大内存" hint="单位 MB">
-            <input
-              className="input"
-              type="number"
-              min={256}
-              step={256}
-              value={settings.defaultMemoryMax}
-              onChange={(e) => void patch({ defaultMemoryMax: Number(e.target.value) })}
+          <Field label="默认内存分配" hint="新建服务器时的起始值">
+            <MemoryRange
+              min={defaultMemory.min}
+              max={defaultMemory.max}
+              onChange={changeDefaultMemory}
             />
           </Field>
           <Field label="默认 JVM 参数">

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Icon } from './Icon'
 import { Field, Modal, Spinner } from './ui'
 import { useStore } from '../store'
-import { isProxyKind, type NetworkJoinResult, type ServerView } from '../../../shared/types'
+import type { NetworkJoinResult, ServerView } from '../../../shared/types'
 
 /**
  * 「加入跨服网络」。
@@ -22,12 +22,12 @@ export function NetworkDialog({
   const refresh = useStore((s) => s.refresh)
   const toast = useStore((s) => s.toast)
 
+  // Waterfall / BungeeCord 暂时关闭，跨服网络只保留 Velocity
   const proxies = useMemo(
-    () => servers.filter((s) => isProxyKind(s.kind) && s.id !== server.id),
+    () => servers.filter((s) => s.kind === 'velocity' && s.id !== server.id),
     [servers, server.id]
   )
   const current = proxies.find((p) => p.id === server.networkId) ?? null
-  // Fabric 接 Velocity 更稳：默认优先选 Velocity，用户仍可以手动换成 Bungee
   const preferredFabricProxy =
     server.kind === 'fabric' ? proxies.find((p) => p.kind === 'velocity') : undefined
   const [target, setTarget] = useState(
@@ -54,7 +54,6 @@ export function NetworkDialog({
   }, [server.id])
 
   const proxy = proxies.find((p) => p.id === target) ?? null
-  const velocities = proxies.filter((p) => p.kind === 'velocity')
 
   const doJoin = async (): Promise<void> => {
     if (!target) {
@@ -157,8 +156,8 @@ export function NetworkDialog({
         <div className="issue-bar" style={{ margin: '0 0 12px' }}>
           <Icon name="alert" size={16} />
           <span className="issue-text">
-            还没有代理端。先在「添加服务器 → 下载跨服网络」里装一个 Velocity / Waterfall /
-            BungeeCord，或者导入已有的代理端，再回来把服务器接进去。
+            还没有代理端。先在「添加服务器 → 下载跨服网络」里装一个 Velocity，或者导入
+            已有的 Velocity 代理端，再回来把服务器接进去。
           </span>
         </div>
       ) : (
@@ -169,26 +168,11 @@ export function NetworkDialog({
           <select className="select" value={target} onChange={(e) => setTarget(e.target.value)}>
             {proxies.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name} · {p.kind === 'velocity' ? 'Velocity' : p.kind === 'waterfall' ? 'Waterfall' : 'BungeeCord'}
+                {p.name} · Velocity
               </option>
             ))}
           </select>
         </Field>
-      )}
-
-      {proxy && server.kind === 'fabric' && proxy.kind !== 'velocity' && (
-        <div className="issue-bar" style={{ margin: '0 0 12px' }}>
-          <Icon name="alert" size={16} />
-          <span className="issue-text">
-            Fabric 后端接 BungeeCord / Waterfall 时，代理端可能注入 FML 握手，导致 Fabric API
-            注册表同步失败（客户端提示需要安装 Fabric API）。推荐改用 Velocity，modern 转发更稳。
-          </span>
-          {velocities[0] && (
-            <button className="btn sm" onClick={() => setTarget(velocities[0].id)}>
-              改用 {velocities[0].name}
-            </button>
-          )}
-        </div>
       )}
 
       {proxy && (
@@ -196,7 +180,7 @@ export function NetworkDialog({
           <h3>接入时会做什么</h3>
           <div className="hint" style={{ lineHeight: 1.9, marginBottom: 8 }}>
             后端：{server.kind === 'fabric' ? 'Fabric' : server.kind === 'forge' ? 'Forge' : server.kind === 'neoforge' ? 'NeoForge' : server.kind} ·
-            代理端：{proxy.kind === 'velocity' ? 'Velocity（modern 转发）' : 'BungeeCord / Waterfall（legacy 转发）'}
+            代理端：Velocity（modern 转发）
           </div>
           <ul className="net-plan">
             {planSteps.map((s, i) => (

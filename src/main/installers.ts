@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
+import { httpFetch } from './http'
 
 /**
  * Forge 和 NeoForge 的安装。
@@ -19,7 +20,7 @@ async function getJson<T>(url: string, timeoutMs = 30000): Promise<T> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
-    const res = await fetch(url, {
+    const res = await httpFetch(url, {
       headers: { 'User-Agent': UA, Accept: 'application/json' },
       signal: ctrl.signal
     })
@@ -118,50 +119,116 @@ export function forgeInstaller(mcVersion: string, build: string): InstallerFile 
 // ---------------------------------------------------------------- NeoForge
 
 const NEOFORGE_MAVEN = 'https://maven.neoforged.net/releases/net/neoforged/neoforge'
+/** 1.20.1 的 NeoForge 还挂在 net.neoforged:forge 这个旧坐标下面 */
+const NEOFORGE_LEGACY_MAVEN = 'https://maven.neoforged.net/releases/net/neoforged/forge'
 
 /**
  * NeoForge 的版本表。
  *
- * 版本号就是 MC 版本的前缀 + 构建号：21.1.209 对应 MC 1.21.1，
- * 20.4.237 对应 1.20.4；MC 换成新版本号之后（26.x）前缀直接照抄。
+ * 版本号就是 MC 版本的前缀 + 构建号，但有两套历史：
+ * - 1.20.2 起：20.4.237 对应 1.20.4，21.1.209 对应 1.21.1；
+ * - 1.20.1：47.1.106，放在旧的 net.neoforged:forge 坐标里；
+ * - 26.x 换了新 MC 版本号：26.1.2.126 对应 26.1.2，前缀要保留三段。
+ *
  * 它没有 Forge 那种 promotions 文件，只能把 maven 上的全量版本拉下来自己分组。
  */
 export async function listNeoForgeVersions(): Promise<InstallerOption[]> {
-  const data = await getJson<{ versions?: string[] }>(
-    'https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge'
-  )
+  const [modern, legacy] = await Promise.all([
+    getJson<{ versions?: string[] }>(
+      'https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge'
+    ),
+    getJson<{ versions?: string[] }>(
+      'https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/forge'
+    ).catch(() => ({ versions: [] }))
+  ])
+  return parseNeoForgeVersions(modern.versions ?? [], legacy.versions ?? [])
+}
+
+/**
+ * 把 maven 的全量版本号分组成「一个 MC 版本一条」。
+ *
+ * 单独拆出来是为了能离线测试：26.1 / 26.1.1 / 26.1.2 必须各自成条，
+ * 1.20.1 的 47.1.x 也必须能从旧坐标里找回来。
+ */
+export function parseNeoForgeVersions(
+  modern: string[],
+  legacy: string[] = []
+): InstallerOption[] {
+  const out: InstallerOption[] = []
 
   const byPrefix = new Map<string, string[]>()
-  for (const v of data.versions ?? []) {
-    const m = v.match(/^(\d+\.\d+)\./)
+  for (const v of modern) {
+    // 26.1.2.126 要保留三段前缀；21.1.209 只会匹配到 21.1
+    const m = v.match(/^(\d+\.\d+(?:\.\d+)?)\./)
     if (!m) continue
     byPrefix.set(m[1], [...(byPrefix.get(m[1]) ?? []), v])
   }
 
-  return [...byPrefix.entries()]
-    .map(([prefix, list]) => {
-      // 有正式版就用正式版，只有 beta 的时候才用 beta（新版刚出时经常如此）
-      const stable = list.filter((v) => !v.includes('-'))
-      const pool = stable.length ? stable : list
-      const pick = pool.slice().sort(compareBuild).pop() as string
-      return {
-        id: mcFromNeoPrefix(prefix),
-        latestBuild: pick,
-        note: pick.includes('-') ? 'beta' : 'stable'
-      }
+  for (const [prefix, list] of byPrefix) {
+    // 有正式版就用正式版，只有 beta 的时候才用 beta（新版刚出时经常如此）
+    const stable = list.filter((v) => !v.includes('-'))
+    const pool = stable.length ? stable : list
+    const pick = pool.slice().sort(compareBuild).pop() as string
+    out.push({
+      id: mcFromNeoPrefix(prefix),
+      latestBuild: pick,
+      note: pick.includes('-') ? 'beta' : 'stable'
     })
-    .sort((a, b) => compareMc(b.id, a.id))
+  }
+
+  // 旧坐标里的条目形如 1.20.1-47.1.106，MC 版本在第一个 "-" 前面
+  const legacyByMc = new Map<string, string[]>()
+  for (const v of legacy) {
+    const m = v.match(/^(\d+\.\d+(?:\.\d+)?)-(.+)$/)
+    if (!m) continue
+    legacyByMc.set(m[1], [...(legacyByMc.get(m[1]) ?? []), v])
+  }
+  for (const [mc, list] of legacyByMc) {
+    // 旧坐标里 "-" 是 MC 和构建号的分隔符，稳定性只看后缀里的 beta/alpha
+    const stable = list.filter((v) => !/-(?:beta|alpha)/i.test(v.slice(mc.length + 1)))
+    const pool = stable.length ? stable : list
+    const pick = pool
+      .slice()
+      .sort((a, b) => compareBuild(a.slice(mc.length + 1), b.slice(mc.length + 1)))
+      .pop() as string
+    out.push({
+      id: mc,
+      latestBuild: pick,
+      note: /-(?:beta|alpha)/i.test(pick.slice(mc.length + 1)) ? 'beta' : 'legacy'
+    })
+  }
+
+  return out.sort((a, b) => compareMc(b.id, a.id))
 }
 
-/** 21.1 → 1.21.1；21.0 → 1.21；26.3 → 26.3（MC 换了新版本号） */
+/**
+ * 21.1 → 1.21.1；21.0 → 1.21；47.1 → 1.20.1（旧坐标）。
+ * 26.x 的 artifact 会在 MC 版本后面补一个 ".0"：26.3.0 → MC 26.3，
+ * 而 26.1.2 → MC 26.1.2；不能一律照抄，也不能一律砍掉最后一段。
+ */
 export function mcFromNeoPrefix(prefix: string): string {
-  const [a, b] = prefix.split('.')
-  if (Number(a) >= 26) return prefix
-  if (!b || b === '0') return `1.${a}`
+  const parts = prefix.split('.').map(Number)
+  const [a, b, c] = parts
+  // 47.x 是 NeoForge 最早的 1.20.1 版本号，数字上比 26 大，必须先判断
+  if (a === 47 && b === 1) return '1.20.1'
+  if (a >= 26) {
+    if (parts.length >= 3 && c === 0) return `${a}.${b}`
+    return prefix
+  }
+  if (!b || b === 0) return `1.${a}`
   return `1.${a}.${b}`
 }
 
 export function neoforgeInstaller(build: string): InstallerFile {
+  // 1.20.1 的构建号形如 1.20.1-47.1.106；现代版本的 "-beta" 不能当成旧坐标
+  if (/^1\.20\.1-/.test(build)) {
+    const name = `forge-${build}-installer.jar`
+    return {
+      url: `${NEOFORGE_LEGACY_MAVEN}/${build}/${name}`,
+      name,
+      checksumFile: `${NEOFORGE_LEGACY_MAVEN}/${build}/${name}.sha1`
+    }
+  }
   const name = `neoforge-${build}-installer.jar`
   return {
     url: `${NEOFORGE_MAVEN}/${build}/${name}`,
@@ -175,7 +242,7 @@ export async function fetchSha1(checksumUrl: string): Promise<string | null> {
   try {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 15000)
-    const res = await fetch(checksumUrl, { headers: { 'User-Agent': UA }, signal: ctrl.signal })
+    const res = await httpFetch(checksumUrl, { headers: { 'User-Agent': UA }, signal: ctrl.signal })
     clearTimeout(timer)
     if (!res.ok) return null
     const text = (await res.text()).trim()

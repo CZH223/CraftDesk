@@ -12,7 +12,16 @@ import type {
   FileEntry,
   IpcResult,
   JavaInfo,
+  LatestModRequest,
+  LatestModResult,
+  MapExportEstimate,
+  McmodRelationRequest,
+  ModCompat,
+  ModCompatItem,
+  MapExportProgress,
+  MapExportResult,
   MapOverview,
+  PlayerProfile,
   PlayerRecord,
   PluginInfo,
   PropertiesEntry,
@@ -52,9 +61,13 @@ import {
 import { createBackup, deleteBackup, listBackups, restoreBackup } from './backups'
 import { downloadFile, installServer, listVersions } from './downloader'
 import {
+  latestVersion,
   listMcdrPlugins,
+  modrinthCompatibility,
   mcdrReleasesFromGithub,
+  modrinthLoaderForKind,
   modrinthVersions,
+  resolveModrinthProject,
   searchModrinth
 } from './registry'
 import {
@@ -70,6 +83,19 @@ import {
 import { parseMemoryFromCommand, resolveLayout, toRootRel } from './layout'
 import { writeStartScript } from './startscript'
 import { detectPython, installMcdr, mcdrReady, probePython } from './python'
+import {
+  lookupMcmodClass,
+  lookupMcmodDownloads,
+  lookupMcmodPage,
+  lookupMcmodRelations,
+  mcmodEnglishName,
+  searchMcmodClasses
+} from './mcmod'
+import {
+  attachDownloadUrls,
+  pickMcmodDownloadFile,
+  resolveExternalDownload
+} from './modSources'
 import { initMcdrEnvironment, writeMcdrConfig, writeMcdrStartScript } from './mcdr'
 import { trashDirectory, whyNotDeletable } from './removal'
 import { listConfigs } from './configs'
@@ -84,7 +110,10 @@ import {
   getMapOverview,
   getMapTile
 } from './mapService'
-import { getPlayerPositions } from './positions'
+import { getPlayerPositions, logOnlineNames } from './positions'
+import { getItemIcons, getPlayerProfile } from './playerDetails'
+import { estimateExport, makeExportTargets, writeTargetPng } from './mapExport'
+import { decodePng } from './png'
 import { withRconEnabled } from './rcon'
 import type {
   BackendCheck,
@@ -146,6 +175,9 @@ export function pickJavaFor(
   if (!usable.length) return { path: settings.javaPath, switched: false, found: null }
   return { path: usable[0].path, switched: true, found: usable[0] }
 }
+
+/** 星图兼容性检查缓存：中心切换回来时不用再打一遍 Modrinth */
+const compatCache = new Map<string, { at: number; value: ModCompat }>()
 
 export function registerIpc(ctx: Ctx): void {
   const { store, manager } = ctx
@@ -338,6 +370,154 @@ export function registerIpc(ctx: Ctx): void {
     }
   })
 
+  /**
+   * 导出地图 PNG：
+   *   all         —— 整个维度的所有 region 拼成一张（透明背景，虚空保持透明）
+   *   components  —— 按 8 邻接连通块拆开，每个完全独立的块单独一张
+   *
+   * 导出只读缓存瓦片；没有缓存的 region 会走同一套 worker 渲染。
+   * 单张图最大 4096 px，区域太多时先降 step，再整体缩小。
+   */
+  ipcMain.handle(
+    'map:export',
+    async (
+      _e,
+      id: string,
+      dim: string,
+      mode: 'all' | 'components',
+      maxPx?: number
+    ) => {
+      const started = Date.now()
+      try {
+        if (mode !== 'all' && mode !== 'components') throw new Error('导出方式不正确')
+        const cfg = store.getServer(id)
+        if (!cfg) throw new Error('服务器不存在')
+        const layout = await resolveLayout(cfg)
+        const info = await getMapInfo(cfg, layout.core, layout.serverProperties)
+        const dimension = info.dimensions.find((d) => d.id === dim)
+        if (!dimension || !dimension.regions.length) throw new Error('这个维度还没有可导出的区域')
+        const px = Math.max(256, Math.min(32768, Math.floor(Number(maxPx) || 4096)))
+
+        const picked = await dialog.showOpenDialog({
+          title: '选择地图导出目录',
+          properties: ['openDirectory', 'createDirectory']
+        })
+        if (picked.canceled || !picked.filePaths.length) {
+          return ok<MapExportResult>({
+            canceled: true,
+            files: [],
+            components: 0,
+            failures: 0,
+            ms: 0
+          })
+        }
+
+        const outDir = picked.filePaths[0]
+        const targets = makeExportTargets(dimension.regions, mode, px)
+        const total = targets.reduce((n, t) => n + t.regions.length, 0)
+        let done = 0
+        let failures = 0
+        const files: MapExportResult['files'] = []
+        const now = new Date()
+        const pad = (n: number): string => String(n).padStart(2, '0')
+        const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+        const safeName = (cfg.name || 'server').replace(/[\\/:*?"<>|]/g, '_').slice(0, 48)
+
+        for (const target of targets) {
+          let file = join(
+            outDir,
+            `${safeName}-${dimension.label}-${target.label}-${stamp}.png`
+          )
+          for (let i = 2; ; i++) {
+            try {
+              await fs.access(file)
+              file = join(
+                outDir,
+                `${safeName}-${dimension.label}-${target.label}-${stamp}-${i}.png`
+              )
+            } catch {
+              break
+            }
+          }
+          const tmp = `${file}.${process.pid}.tmp`
+          try {
+            await writeTargetPng(
+              target,
+              tmp,
+              async (r) => {
+                const tile = await getMapTile(cfg, dim, r.rx, r.rz, info, target.step)
+                const comma = tile.png.indexOf(',')
+                const decoded = decodePng(
+                  Buffer.from(comma >= 0 ? tile.png.slice(comma + 1) : tile.png, 'base64')
+                )
+                return { size: decoded.width, rgba: decoded.rgba }
+              },
+              (_r, ok) => {
+                done++
+                if (!ok) failures++
+                send('map:export-progress', {
+                  serverId: id,
+                  dim,
+                  done,
+                  total,
+                  label: target.label
+                } satisfies MapExportProgress)
+              }
+            )
+            await fs.rename(tmp, file)
+          } catch (err) {
+            await fs.rm(tmp, { force: true }).catch(() => {})
+            throw err
+          }
+          files.push({
+            path: file,
+            width: target.width,
+            height: target.height,
+            regions: target.regions.length
+          })
+        }
+
+        return ok<MapExportResult>({
+          canceled: false,
+          dir: outDir,
+          files,
+          components: mode === 'components' ? targets.length : 1,
+          failures,
+          ms: Date.now() - started
+        })
+      } catch (err) {
+        return fail(err)
+      }
+    }
+  )
+
+  /** 导出前预估：实际输出尺寸、总像素、文件大小范围和大图提醒 */
+  ipcMain.handle(
+    'map:exportEstimate',
+    async (
+      _e,
+      id: string,
+      dim: string,
+      mode: 'all' | 'components',
+      maxPx?: number
+    ) => {
+      try {
+        if (mode !== 'all' && mode !== 'components') throw new Error('导出方式不正确')
+        const cfg = store.getServer(id)
+        if (!cfg) throw new Error('服务器不存在')
+        const layout = await resolveLayout(cfg)
+        const info = await getMapInfo(cfg, layout.core, layout.serverProperties)
+        const dimension = info.dimensions.find((d) => d.id === dim)
+        if (!dimension || !dimension.regions.length) throw new Error('这个维度还没有可导出的区域')
+        const px = Math.max(256, Math.min(32768, Math.floor(Number(maxPx) || 4096)))
+        const targets = makeExportTargets(dimension.regions, mode, px)
+        return ok<MapExportEstimate>(estimateExport(targets, px))
+      } catch (err) {
+        return fail(err)
+      }
+    }
+  )
+
   ipcMain.handle('map:height', async (_e, id: string, dim: string, x: number, z: number) => {
     try {
       const cfg = store.getServer(id)
@@ -360,7 +540,13 @@ export function registerIpc(ctx: Ctx): void {
       if (!cfg) throw new Error('服务器不存在')
       const layout = await resolveLayout(cfg)
       return ok<MapPlayerPosition[]>(
-        await getPlayerPositions(manager, cfg, layout.playersDir, layout.serverProperties)
+        await getPlayerPositions(
+          manager,
+          cfg,
+          layout.playersDir,
+          layout.serverProperties,
+          layout.core
+        )
       )
     } catch (err) {
       return fail(err)
@@ -480,6 +666,262 @@ export function registerIpc(ctx: Ctx): void {
       return fail(err)
     }
   })
+
+  /** MC百科搜索：下载页的 MC百科栏目用 */
+  ipcMain.handle('mcmod:search', async (_e, query: string) => {
+    try {
+      return ok(await searchMcmodClasses(query))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  /**
+   * MC百科「Mod下载」文件表。MC百科自己的下载按钮要验证码，不能自动点；
+   * 这里把文件列表取回来，再按同名文件去 CurseForge / GitHub / Modrinth
+   * 找到直链，安装仍然走 registry:install（落到 mods/ 或 plugins/）。
+   */
+  ipcMain.handle('mcmod:downloads', async (_e, classId: string) => {
+    try {
+      const list = await lookupMcmodDownloads(classId)
+      if (!list) return ok(null)
+      const page = await lookupMcmodPage(classId)
+      const files = await attachDownloadUrls(list.files, page?.links ?? [])
+      return ok({ ...list, files })
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  /**
+   * MC百科关系：按本地模组的 id/名字找到百科条目，再取它的星图数据。
+   * 只取中心直接相连的一圈；找不到或站点打不开时返回 null，星图照常显示本地关系。
+   */
+  ipcMain.handle('mcmod:relations', async (_e, req: McmodRelationRequest) => {
+    try {
+      if (!req?.id && !req?.name) return ok(null)
+      return ok(await lookupMcmodRelations(req))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  /**
+   * 星图补齐/下载：按依赖 id 去 Modrinth 找项目，再挑当前服务端
+   * 游戏版本 + 加载器下最新的那个版本。找不到就返回 null，让界面说清楚，
+   * 不要随便装一个不兼容的版本。
+   */
+  ipcMain.handle('registry:latest', async (_e, serverId: string, req: LatestModRequest) => {
+    try {
+      const cfg = store.getServer(serverId)
+      if (!cfg) throw new Error('服务器不存在')
+      if (!req?.id && !req?.name) throw new Error('没有可查询的模组 id')
+
+      const projectType = req.kind === 'plugin' ? 'plugin' : 'mod'
+      let project = await resolveModrinthProject({
+        id: req.id,
+        name: req.name,
+        kind: projectType
+      })
+
+      const filter = {
+        gameVersion: cfg.mcVersion || undefined,
+        loader: modrinthLoaderForKind(cfg.kind) || undefined
+      }
+      const modrinthVersion = async (): Promise<LatestModResult | null> => {
+        if (!project) return null
+        const list = await modrinthVersions(project.projectId, filter)
+        const v = latestVersion(list)
+        if (!v) return null
+        return {
+          projectId: project.projectId,
+          slug: project.slug,
+          title: project.title,
+          source: 'modrinth',
+          version: {
+            id: v.id,
+            name: v.versionNumber,
+            channel: v.versionType,
+            fileName: v.fileName,
+            fileUrl: v.fileUrl,
+            fileSize: v.fileSize,
+            downloads: v.downloads,
+            publishedAt: v.publishedAt,
+            gameVersions: v.gameVersions,
+            loaders: v.loaders
+          }
+        }
+      }
+
+      const direct = await modrinthVersion()
+      if (direct) return ok<LatestModResult>(direct)
+
+      /*
+       * Modrinth 找不到/没有适配版本时再问 MC百科：
+       * 1. 用百科标题把依赖 id 翻成正常名字，再试一次 Modrinth；
+       * 2. 仍然不行就顺着百科的 CurseForge / GitHub 外链找文件。
+       */
+      let mcmodHit =
+        (await lookupMcmodClass(req.name)) ?? (await lookupMcmodClass(req.id))
+      let title = project?.title ?? ''
+      let sourceUrl: string | undefined
+      if (!project && mcmodHit) {
+        const english = mcmodEnglishName(mcmodHit.title)
+        project = await resolveModrinthProject({
+          id: english || mcmodHit.title,
+          name: english || mcmodHit.title,
+          kind: projectType
+        })
+        const retried = await modrinthVersion()
+        if (retried) return ok<LatestModResult>(retried)
+        title = project?.title ?? title
+      }
+      if (mcmodHit) {
+        const page = await lookupMcmodPage(mcmodHit.classId)
+        if (page) {
+          if (!title) title = page.title
+          const external = await resolveExternalDownload(
+            page.links,
+            cfg.kind,
+            cfg.mcVersion || ''
+          )
+          if (external) {
+            return ok<LatestModResult>({
+              projectId: project?.projectId ?? `mcmod-${page.classId}`,
+              slug: project?.slug ?? '',
+              title: title || page.title,
+              source: external.source,
+              sourceUrl: external.pageUrl,
+              version: external.version
+            })
+          }
+
+          // 最后再按 MC百科「Mod下载」文件表逐条匹配同名文件
+          const downloads = await lookupMcmodDownloads(page.classId)
+          if (downloads) {
+            const files = await attachDownloadUrls(downloads.files, page.links)
+            const file = pickMcmodDownloadFile(files, cfg.kind, cfg.mcVersion || '')
+            if (file?.url && file.source) {
+              return ok<LatestModResult>({
+                projectId: project?.projectId ?? `mcmod-${page.classId}`,
+                slug: project?.slug ?? '',
+                title: title || page.title,
+                source: file.source,
+                sourceUrl: file.pageUrl,
+                version: {
+                  id: `mcmod-${file.id}`,
+                  name: file.fileName,
+                  channel: 'release',
+                  fileName: file.fileName,
+                  fileUrl: file.url,
+                  fileSize: file.size,
+                  downloads: 0,
+                  publishedAt: file.uploadedAt,
+                  gameVersions: file.mcVersions,
+                  loaders: file.loaders
+                }
+              })
+            }
+          }
+          sourceUrl = page.links[0]?.url ?? page.pageUrl
+        }
+      }
+
+      if (!project && !title) return ok<LatestModResult | null>(null)
+      return ok<LatestModResult>({
+        projectId: project?.projectId ?? '',
+        slug: project?.slug ?? '',
+        title,
+        sourceUrl,
+        version: null
+      })
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  /** 右侧栏分栏用：插件和模组各有多少个（只看文件，不解析 jar，很快） */
+  ipcMain.handle('plugins:counts', async (_e, id: string) => {
+    try {
+      const cfg = store.getServer(id)
+      if (!cfg) throw new Error('服务器不存在')
+      const layout = await resolveLayout(cfg)
+      const count = async (dir: string | null, exts: string[]): Promise<number> => {
+        if (!dir) return 0
+        try {
+          const entries = await fs.readdir(dir, { withFileTypes: true })
+          return entries.filter((entry) => {
+            if (entry.name.startsWith('.')) return false
+            if (entry.isDirectory()) return true
+            if (!entry.isFile()) return false
+            const lower = entry.name.toLowerCase().replace(/\.disabled$/, '')
+            return exts.some((ext) => lower.endsWith(ext))
+          }).length
+        } catch {
+          return 0
+        }
+      }
+      const plugins =
+        (await count(layout.mcdrPluginsDir, ['.mcdr', '.pyz', '.py'])) +
+        (await count(layout.mcPluginsDir, ['.jar']))
+      const mods = await count(layout.modsDir, ['.jar'])
+      return ok({ plugins, mods })
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  /**
+   * 星图兼容性：批量检查百科条目在当前服务器版本 / 加载器下有没有可用版本。
+   * 这样「联动模组」里那些只支持旧版本的条目就不会再画出来。
+   */
+  ipcMain.handle(
+    'registry:compat',
+    async (_e, serverId: string, items: ModCompatItem[]) => {
+      try {
+        const cfg = store.getServer(serverId)
+        if (!cfg) throw new Error('服务器不存在')
+        const filter = {
+          gameVersion: cfg.mcVersion || undefined,
+          loader: modrinthLoaderForKind(cfg.kind) || undefined
+        }
+        const now = Date.now()
+        const out: Record<string, ModCompat> = {}
+        const byQuery = new Map<string, Promise<ModCompat>>()
+
+        const check = (item: ModCompatItem): Promise<ModCompat> => {
+          const cacheKey = `${filter.gameVersion ?? ''}|${filter.loader ?? ''}|${item.kind}|${item.id}|${item.name}`
+          const cached = compatCache.get(cacheKey)
+          if (cached && now - cached.at < 10 * 60 * 1000) {
+            return Promise.resolve(cached.value)
+          }
+          const pending = byQuery.get(cacheKey)
+          if (pending) return pending
+          const p = modrinthCompatibility(
+            { id: item.id, name: item.name, kind: item.kind },
+            filter
+          ).then((value) => {
+            compatCache.set(cacheKey, { at: Date.now(), value })
+            return value
+          })
+          byQuery.set(cacheKey, p)
+          return p
+        }
+
+        let cursor = 0
+        const workers = Array.from({ length: Math.min(4, items.length) }, async () => {
+          while (cursor < items.length) {
+            const item = items[cursor++]
+            out[item.key] = await check(item)
+          }
+        })
+        await Promise.all(workers)
+        return ok(out)
+      } catch (err) {
+        return fail(err)
+      }
+    }
+  )
 
   /**
    * 把扩展装进服务器目录。
@@ -1178,8 +1620,10 @@ export function registerIpc(ctx: Ctx): void {
       if (!cfg) throw new Error('服务器不存在')
       // ops.json / whitelist.json 都在服务端核心目录里
       const layout = await resolveLayout(cfg)
-      const online = manager.runtime(id).onlinePlayers
-      return ok<PlayerRecord[]>(await listPlayers(layout.playersDir, online))
+      const online = new Set(manager.runtime(id).onlinePlayers)
+      // 外部启动的服务端 manager 不知道在线名单；从 latest.log 的登录/退出补上
+      for (const name of await logOnlineNames(layout.core)) online.add(name)
+      return ok<PlayerRecord[]>(await listPlayers(layout.playersDir, [...online]))
     } catch (err) {
       return fail(err)
     }
@@ -1201,6 +1645,43 @@ export function registerIpc(ctx: Ctx): void {
       }
     }
   )
+
+  /**
+   * 地图右侧的玩家档案：Mojang 正版信息 + playerdata 里的经验 / 背包 /
+   * 末影箱 / 装备。网络失败只影响对应字段，不会让整个请求失败。
+   */
+  ipcMain.handle(
+    'players:detail',
+    async (_e, id: string, name: string, uuid?: string) => {
+      try {
+        const cfg = store.getServer(id)
+        if (!cfg) throw new Error('服务器不存在')
+        const layout = await resolveLayout(cfg)
+        return ok<PlayerProfile>(
+          await getPlayerProfile(cfg, layout, name, typeof uuid === 'string' ? uuid : undefined)
+        )
+      } catch (err) {
+        return fail(err)
+      }
+    }
+  )
+
+  /** 批量取物品图标（按当前服务器的 Minecraft 资源版本），带磁盘缓存 */
+  ipcMain.handle('players:itemIcons', async (_e, id: string, ids: string[]) => {
+    try {
+      const cfg = store.getServer(id)
+      if (!cfg) throw new Error('服务器不存在')
+      if (!Array.isArray(ids)) throw new Error('物品列表格式不正确')
+      return ok<Record<string, string | null>>(
+        await getItemIcons(
+          cfg.mcVersion,
+          ids.filter((v): v is string => typeof v === 'string').slice(0, 200)
+        )
+      )
+    } catch (err) {
+      return fail(err)
+    }
+  })
 
   ipcMain.handle('players:setOp', async (_e, id: string, name: string, value: boolean) => {
     try {
@@ -1254,7 +1735,7 @@ export function registerIpc(ctx: Ctx): void {
       const cfg = store.getServer(id)
       if (!cfg) throw new Error('服务器不存在')
       const layout = await resolveLayout(cfg)
-      return ok<PluginInfo[]>(await listPlugins(layout))
+      return ok<PluginInfo[]>(await listPlugins(layout, cfg.kind))
     } catch (err) {
       return fail(err)
     }

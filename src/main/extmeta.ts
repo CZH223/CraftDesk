@@ -1,3 +1,4 @@
+import type { ExtensionLoader } from '../shared/types'
 import { ZipReader, parseSimpleYaml, yamlList } from './zip'
 
 /**
@@ -43,6 +44,8 @@ export interface ExtMeta {
    * 所以那边只能是 unknown，不猜。
    */
   side: ModSide
+  /** jar 里出现了哪些加载器的描述文件（混装 jar 可能不止一个） */
+  loaders: ExtensionLoader[]
   /**
    * 文件本身读不动（zip 结构坏了、被截断）。
    * 和「这个 jar 里没有元数据」是两回事：前者要重新下载，
@@ -63,6 +66,7 @@ export const emptyMeta = (): ExtMeta => ({
   breaks: [],
   ranges: {},
   side: 'unknown',
+  loaders: [],
   broken: false
 })
 
@@ -407,12 +411,37 @@ export function parseMcdrDeps(rawDeps: unknown): { hard: string[]; ranges: Recor
 }
 
 /**
+ * 从中央目录判断 jar 里出现了哪些加载器的描述文件。
+ * 混装 jar（Fabric + Forge 双加载器）会同时命中多个。
+ */
+function detectLoaders(zip: ZipReader): ExtensionLoader[] {
+  const names = new Set(zip.list().map((n) => n.toLowerCase()))
+  const out: ExtensionLoader[] = []
+  if (names.has('fabric.mod.json')) out.push('fabric')
+  if (names.has('meta-inf/neoforge.mods.toml')) out.push('neoforge')
+  if (names.has('meta-inf/mods.toml')) out.push('forge')
+  if (
+    names.has('plugin.yml') ||
+    names.has('paper-plugin.yml') ||
+    names.has('bukkit.yml')
+  ) {
+    out.push('bukkit')
+  }
+  if (names.has('bungee.yml')) out.push('bungee')
+  if (names.has('velocity-plugin.json')) out.push('velocity')
+  return out
+}
+
+/**
  * 读一个 jar 的元数据。
  *
  * 顺序有讲究：描述文件名越独特的越先判断。
  * mcmod.info 放最后——很多模组会把没用的旧元数据一起打包进来。
  */
-export async function readJarMeta(jarPath: string): Promise<ExtMeta> {
+export async function readJarMeta(
+  jarPath: string,
+  preferredLoaders: ExtensionLoader[] = []
+): Promise<ExtMeta> {
   const zip = await ZipReader.open(jarPath)
   if (!zip) return { ...emptyMeta(), broken: true }
 
@@ -420,48 +449,95 @@ export async function readJarMeta(jarPath: string): Promise<ExtMeta> {
     // 中央目录一条都读不出来 = zip 结构坏了（下载被截断最常见），
     // 这种文件 Java 也读不了，得让界面直接说「重新下载」而不是显示成空条目
     if (!zip.list().length) return { ...emptyMeta(), broken: true }
+    const loaders = detectLoaders(zip)
 
-    const vpj = await zip.read('velocity-plugin.json')
-    if (vpj) {
-      const m = parseVelocityMeta(vpj)
-      if (m) return m
+    const finish = (m: ExtMeta, fallback: ExtensionLoader[]): ExtMeta => {
+      m.loaders = loaders.length ? loaders : fallback
+      return m
     }
 
-    for (const f of ['bungee.yml', 'plugin.yml', 'paper-plugin.yml', 'bukkit.yml']) {
-      const text = await zip.read(f)
-      if (text) return parseBukkitMeta(text)
-    }
+    /*
+     * 双加载器 jar（fabric.mod.json + mods.toml）必须按当前服务端选元数据。
+     * 否则 Forge 服会拿 Fabric 的 depends 去算，凭空报出 fabric-api 缺失。
+     */
+    const order: ExtensionLoader[] =
+      preferredLoaders.length > 0
+        ? [...new Set(preferredLoaders)]
+        : ['velocity', 'bungee', 'bukkit', 'fabric', 'forge', 'neoforge']
+    let triedModsToml = false
 
-    const fmj = await zip.read('fabric.mod.json')
-    if (fmj) {
-      const m = parseFabricMeta(fmj)
-      if (m) {
-        // Fabric API 这种「一个 jar 里装几十个小模组」的写法：
-        // 里面每个小模组的 id 都算这个 jar 提供的，不然所有依赖
-        // fabric-api-base 的模组都会被报成「缺前置」
-        for (const id of await nestedIds(zip, 'META-INF/jars/')) m.provides.push(id)
-        m.provides = [...new Set(m.provides)]
-        return m
+    for (const loader of order) {
+      if (loader === 'velocity') {
+        const vpj = await zip.read('velocity-plugin.json')
+        if (vpj) {
+          const m = parseVelocityMeta(vpj)
+          if (m) return finish(m, ['velocity'])
+        }
+      }
+
+      if (loader === 'bungee' || loader === 'bukkit') {
+        const files =
+          loader === 'bungee'
+            ? ['bungee.yml', 'plugin.yml', 'paper-plugin.yml', 'bukkit.yml']
+            : ['plugin.yml', 'paper-plugin.yml', 'bukkit.yml', 'bungee.yml']
+        for (const f of files) {
+          const text = await zip.read(f)
+          if (text) {
+            const m = parseBukkitMeta(text)
+            return finish(m, [loader])
+          }
+        }
+      }
+
+      if (loader === 'fabric') {
+        const fmj = await zip.read('fabric.mod.json')
+        if (fmj) {
+          const m = parseFabricMeta(fmj)
+          if (m) {
+            // Fabric API 这种「一个 jar 里装几十个小模组」的写法：
+            // 里面每个小模组的 id 都算这个 jar 提供的，不然所有依赖
+            // fabric-api-base 的模组都会被报成「缺前置」
+            for (const id of await nestedIds(zip, 'META-INF/jars/')) m.provides.push(id)
+            m.provides = [...new Set(m.provides)]
+            return finish(m, ['fabric'])
+          }
+        }
+      }
+
+      if ((loader === 'forge' || loader === 'neoforge') && !triedModsToml) {
+        triedModsToml = true
+        const files =
+          loader === 'neoforge'
+            ? ['META-INF/neoforge.mods.toml', 'META-INF/mods.toml']
+            : ['META-INF/mods.toml', 'META-INF/neoforge.mods.toml']
+        for (const f of files) {
+          const text = await zip.read(f)
+          if (text) {
+            const m = parseModsToml(text)
+            m.loaders = loaders.length
+              ? loaders
+              : [f.toLowerCase().includes('neoforge') ? 'neoforge' : 'forge']
+            for (const id of await jarJarIds(zip)) m.provides.push(id)
+            m.provides = [...new Set(m.provides)]
+            return m
+          }
+        }
       }
     }
 
-    for (const f of ['META-INF/neoforge.mods.toml', 'META-INF/mods.toml']) {
-      const text = await zip.read(f)
-      if (text) {
-        const m = parseModsToml(text)
-        for (const id of await jarJarIds(zip)) m.provides.push(id)
-        m.provides = [...new Set(m.provides)]
-        return m
+    // mcmod.info 是 Forge 的旧元数据；Fabric/代理端优先时不拿它兜底
+    const wantLegacy =
+      preferredLoaders.length === 0 ||
+      preferredLoaders.some((l) => l === 'forge' || l === 'neoforge')
+    if (wantLegacy) {
+      const mcmod = await zip.read('mcmod.info')
+      if (mcmod) {
+        const m = parseMcmodInfo(mcmod)
+        if (m) return finish(m, ['forge'])
       }
     }
 
-    const mcmod = await zip.read('mcmod.info')
-    if (mcmod) {
-      const m = parseMcmodInfo(mcmod)
-      if (m) return m
-    }
-
-    return emptyMeta()
+    return { ...emptyMeta(), loaders }
   } finally {
     await zip.close()
   }

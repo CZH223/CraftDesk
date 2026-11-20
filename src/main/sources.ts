@@ -5,6 +5,7 @@ import type {
   RegistryVersion,
   ServerKind
 } from '../shared/types'
+import { httpFetch } from './http'
 
 /**
  * 扩展下载源。
@@ -27,7 +28,7 @@ async function getJson<T>(url: string, headers: Record<string, string> = {}): Pr
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT)
   try {
-    const res = await fetch(url, {
+    const res = await httpFetch(url, {
       headers: { 'User-Agent': UA, Accept: 'application/json', ...headers },
       signal: ctrl.signal
     })

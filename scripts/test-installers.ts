@@ -58,8 +58,11 @@ async function main(): Promise<void> {
   check('21.1 → 1.21.1', mcFromNeoPrefix('21.1') === '1.21.1')
   check('21.0 → 1.21', mcFromNeoPrefix('21.0') === '1.21')
   check('20.4 → 1.20.4', mcFromNeoPrefix('20.4') === '1.20.4')
-  // 26.x 之后 MC 自己改成了 26.1 这种版本号，前缀要原样保留
+  // 26.x 之后 MC 自己改成了 26.1 这种版本号；artifact 会补一个 .0
   check('26.3 → 26.3', mcFromNeoPrefix('26.3') === '26.3')
+  check('26.3.0 → 26.3', mcFromNeoPrefix('26.3.0') === '26.3')
+  check('26.1.2 → 26.1.2', mcFromNeoPrefix('26.1.2') === '26.1.2')
+  check('47.1 → 1.20.1（旧坐标）', mcFromNeoPrefix('47.1') === '1.20.1')
 
   console.log('\n══ Forge 版本表（files.minecraftforge.net 的 promotions）══')
   const forge = await listForgeVersions()
@@ -82,6 +85,26 @@ async function main(): Promise<void> {
     n211?.latestBuild
   )
   check('默认给的是正式版', !(n211?.latestBuild ?? '').includes('-'))
+
+  const n201 = neo.find((v) => v.id === '1.20.1')
+  check('有 1.20.1（1.20.2 以下也有）', Boolean(n201), n201 ? `${n201.latestBuild}（${n201.note}）` : '')
+  check(
+    '1.20.1 构建号走旧坐标',
+    /^1\.20\.1-47\.1\.\d+$/.test(n201?.latestBuild ?? ''),
+    n201?.latestBuild
+  )
+  const n2612 = neo.find((v) => v.id === '26.1.2')
+  check('有 26.1.2（补丁版本没被并进 26.1）', Boolean(n2612), n2612?.latestBuild)
+  check(
+    '26.1.2 构建号形如 26.1.2.x',
+    /^26\.1\.2\.\d+/.test(n2612?.latestBuild ?? ''),
+    n2612?.latestBuild
+  )
+  check('26.3 还在', neo.some((v) => v.id === '26.3'))
+  check(
+    'MC 版本从新到旧且无重复',
+    new Set(neo.map((v) => v.id)).size === neo.length && neo[0].id > neo[neo.length - 1].id
+  )
 
   console.log('\n══ 安装器地址与校验值 ══')
   const forgeFile = forgeInstaller('1.20.1', f1201!.latestBuild!)
@@ -114,6 +137,21 @@ async function main(): Promise<void> {
     'NeoForge 安装器有 sha1',
     neoShaOk,
     neoShaOk ? neoSha!.slice(0, 12) : await whyNoSha1(neoFile.checksumFile!)
+  )
+
+  const legacyFile = neoforgeInstaller(n201!.latestBuild!)
+  check('1.20.1 安装器文件名规范', legacyFile.name === `forge-${n201!.latestBuild}-installer.jar`, legacyFile.name)
+  const legacyHead = await head(legacyFile.url)
+  check(
+    '1.20.1 安装器可下载（旧坐标）',
+    legacyHead.ok,
+    `HTTP ${legacyHead.status} ${(legacyHead.size / 1048576).toFixed(1)} MB`
+  )
+  const legacySha = await fetchSha1(legacyFile.checksumFile!)
+  check(
+    '1.20.1 安装器有 sha1',
+    /^[0-9a-f]{40}$/i.test(legacySha ?? ''),
+    legacySha ? legacySha.slice(0, 12) : await whyNoSha1(legacyFile.checksumFile!)
   )
 
   console.log('\n══ 装完之后的启动入口查找 ══')

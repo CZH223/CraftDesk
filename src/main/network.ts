@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs'
 import { basename, dirname, join, relative, sep } from 'node:path'
 import {
+  isEnabledProxyKind,
   isProxyKind,
   type NetworkBackendPlan,
   type NetworkPlan,
@@ -166,27 +167,16 @@ export async function scanNetworkImport(
   managed: ServerConfig[]
 ): Promise<NetworkPlan> {
   const proxy = await detectServer(dir)
-  if (!isProxyKind(proxy.kind)) {
+  // Waterfall / BungeeCord 暂时关闭识别，只接受 Velocity 网络
+  if (!isProxyKind(proxy.kind) || !isEnabledProxyKind(proxy.kind)) {
     throw new Error(
-      '这个目录不像代理端。跨服网络的入口是 Velocity / BungeeCord / Waterfall，' +
-        '目录里应该有 velocity.toml 或 config.yml，以及代理端的 jar。'
+      '这个目录不像 Velocity 代理端。跨服网络入口当前只支持 Velocity，' +
+        '目录里应该有 velocity.toml，以及 Velocity 的 jar。'
     )
   }
 
-  // 代理端配置里的后端：Velocity 在 velocity.toml，Bungee 系在 config.yml
-  let entries: VelocityServerEntry[] = []
-  if (proxy.kind === 'velocity') {
-    entries = (await readVelocityFile(dir)).servers
-  } else {
-    for (const file of ['config.yml', 'waterfall.yml']) {
-      try {
-        entries = parseBungeeServers(await fs.readFile(join(dir, file), 'utf-8'))
-        if (entries.length) break
-      } catch {
-        /* 换下一个 */
-      }
-    }
-  }
+  // Velocity 的后端列表在 velocity.toml 的 [servers] 里
+  const entries: VelocityServerEntry[] = (await readVelocityFile(dir)).servers
 
   const searchRoot = dirname(dir)
   const known = await managedPorts(managed)

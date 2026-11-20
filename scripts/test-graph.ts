@@ -13,7 +13,14 @@
  */
 import { promises as fs } from 'node:fs'
 import { resolve } from 'node:path'
-import { DEFAULT_LIMIT, buildStarGraph, graphBounds, pickCenter } from '../src/renderer/src/graph'
+import {
+  DEFAULT_LIMIT,
+  allMissingDependencies,
+  buildStarGraph,
+  graphBounds,
+  missingGraphNodes,
+  pickCenter
+} from '../src/renderer/src/graph'
 import { listPlugins } from '../src/main/plugins'
 import { resolveLayout } from '../src/main/layout'
 import type { PluginInfo, ServerConfig } from '../src/shared/types'
@@ -45,6 +52,8 @@ function item(patch: Partial<PluginInfo>): PluginInfo {
     breaks: [],
     ranges: {},
     broken: false,
+    loaders: [],
+    loaderMismatch: false,
     requires: [],
     usedBy: [],
     ...patch
@@ -153,6 +162,123 @@ function syntheticTests(): void {
   const missing = g.nodes.find((n) => n.missing)
   check('缺失的前置也画成一个节点', Boolean(missing), missing?.name)
   check('缺失节点标成 missing 且点不动', missing?.missing === true && missing?.focusable === false)
+  check('缺失节点带上扩展类型，下载时知道装哪', missing?.kind === 'mod', missing?.kind)
+  check('硬前置被标出来', missing?.hardMissing === true)
+  check('已安装节点不会被当成缺失', g.nodes.filter((n) => !n.missing).every((n) => !n.hardMissing))
+
+  // 一键补齐要能拿到所有缺失，并且硬前置优先
+  const softGraph = buildStarGraph([
+    item({
+      id: 'x',
+      name: 'X',
+      path: 'mods/x.jar',
+      requires: [
+        { id: 'soft', hard: false, range: '', state: 'missing', provider: null, providerName: null },
+        { id: 'hard', hard: true, range: '', state: 'missing', provider: null, providerName: null }
+      ]
+    })
+  ])
+  const softMissing = missingGraphNodes(softGraph)
+  check('一键补齐能找到所有缺失', softMissing.length === 2, `${softMissing.length}`)
+  check('硬前置排在软前置前面', softMissing[0]?.modId === 'hard', softMissing.map((n) => n.modId).join(','))
+  check(
+    '软缺失不标成硬缺失',
+    softMissing.find((n) => n.modId === 'soft')?.hardMissing === false
+  )
+
+  // 「一键补齐」不看节点上限：全量扫描也要能找到图外的缺失
+  const fullMissing = allMissingDependencies([
+    item({
+      id: 'x',
+      name: 'X',
+      path: 'mods/x.jar',
+      requires: [
+        { id: 'soft', hard: false, range: '', state: 'missing', provider: null, providerName: null },
+        { id: 'hard', hard: true, range: '', state: 'missing', provider: null, providerName: null },
+        { id: 'hard', hard: true, range: '', state: 'missing', provider: null, providerName: null }
+      ]
+    }),
+    item({
+      id: 'off',
+      name: 'Off',
+      path: 'mods/off.jar',
+      enabled: false,
+      requires: [
+        { id: 'offdep', hard: true, range: '', state: 'missing', provider: null, providerName: null }
+      ]
+    })
+  ])
+  check('全量缺失按 id 去重', fullMissing.filter((n) => n.modId === 'hard').length === 1)
+  check('全量缺失仍把硬前置排前面', fullMissing[0]?.hardMissing === true)
+  check(
+    '只看已启用时不扫禁用扩展的缺失',
+    allMissingDependencies(
+      [
+        item({
+          id: 'off',
+          name: 'Off',
+          path: 'mods/off.jar',
+          enabled: false,
+          requires: [
+            { id: 'offdep', hard: true, range: '', state: 'missing', provider: null, providerName: null }
+          ]
+        })
+      ],
+      true
+    ).length === 0
+  )
+
+  // platform 依赖（minecraft / neoforge）不算关系，否则中心会虚报「关系 3」
+  const platformOnly = buildStarGraph([
+    item({
+      id: 'p',
+      name: 'P',
+      path: 'mods/p.jar',
+      requires: [
+        { id: 'minecraft', hard: true, range: '', state: 'platform', provider: null, providerName: null },
+        { id: 'neoforge', hard: true, range: '', state: 'platform', provider: null, providerName: null },
+        { id: 'lib', hard: true, range: '', state: 'missing', provider: null, providerName: null }
+      ]
+    })
+  ])
+  check('平台依赖不计入关系数量', platformOnly.center?.degree === 1, `${platformOnly.center?.degree}`)
+
+  // 和中心没有依赖路径的模组：默认画到外圈，关掉时计数也要说清楚
+  const unrelatedItems: PluginInfo[] = [
+    item({
+      id: 'hub2',
+      name: 'Hub2',
+      path: 'mods/hub2.jar',
+      requires: [
+        { id: 'core', hard: true, range: '', state: 'ok', provider: 'mods/core.jar', providerName: 'Core' }
+      ]
+    }),
+    item({ id: 'core', name: 'Core', path: 'mods/core.jar' })
+  ]
+  for (let i = 0; i < 5; i++) {
+    unrelatedItems.push(item({ id: `loose${i}`, name: `Loose ${i}`, path: `mods/loose${i}.jar` }))
+  }
+  const withOthers = buildStarGraph(unrelatedItems, 'mods/hub2.jar', 15, true)
+  check('默认把 5 个无关系模组也画出来', withOthers.nodes.length === 7, `${withOthers.nodes.length}`)
+  check(
+    '无关系模组以外圈节点出现',
+    withOthers.nodes.filter((n) => n.role === 'other').length === 5
+  )
+  check(
+    '外圈在关系节点之外',
+    withOthers.nodes
+      .filter((n) => n.role === 'other')
+      .every((n) => Math.hypot(n.x, n.y) > 400)
+  )
+  check('无关系数量单独统计', withOthers.unrelated === 5, `${withOthers.unrelated}`)
+  check('默认显示时没有节点被省掉', withOthers.hidden === 0, `${withOthers.hidden}`)
+  const withoutOthers = buildStarGraph(unrelatedItems, 'mods/hub2.jar', 15, false)
+  check('关掉后只剩关系节点', withoutOthers.nodes.length === 2, `${withoutOthers.nodes.length}`)
+  check(
+    '关掉后隐藏数量里包含无关系模组',
+    withoutOthers.hidden === 5 && withoutOthers.unrelated === 5,
+    `${withoutOthers.hidden}/${withoutOthers.unrelated}`
+  )
 
   const secondRing = g.nodes.filter((n) => n.role === 'related')
   check('第二圈有节点（其它关系）', secondRing.length > 0, secondRing.map((n) => n.name).join(','))

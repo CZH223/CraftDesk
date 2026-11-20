@@ -14,6 +14,8 @@ import {
   proxyConfigText
 } from './proxySetup'
 import { run } from './java'
+import { httpFetch } from './http'
+import { proxyJvmArgs, resolveProxyFor } from './netProxy'
 import {
   fetchSha1,
   findArgsFile,
@@ -31,7 +33,7 @@ async function getJson<T>(url: string): Promise<T> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT)
   try {
-    const res = await fetch(url, {
+    const res = await httpFetch(url, {
       headers: { 'User-Agent': UA, Accept: 'application/json' },
       signal: ctrl.signal
     })
@@ -62,7 +64,7 @@ export async function downloadFile(
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 10 * 60 * 1000)
   try {
-    const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: ctrl.signal })
+    const res = await httpFetch(url, { headers: { 'User-Agent': UA }, signal: ctrl.signal })
     if (!res.ok || !res.body) throw new Error(`下载失败：HTTP ${res.status} ${res.statusText}`)
 
     /*
@@ -237,10 +239,10 @@ export async function listVersions(kind: ServerKind): Promise<VersionOption[]> {
     // 代理端：本身不加载世界，只有版本 / 构建号之分
     case 'velocity':
       return listVelocityVersions()
+    // Waterfall / BungeeCord 暂时关闭下载，只保留 Velocity
     case 'waterfall':
-      return listWaterfallVersions()
     case 'bungeecord':
-      return listBungeeVersions()
+      throw new Error('Waterfall / BungeeCord 下载已暂时关闭，目前只支持 Velocity')
     // 这两家官方只给安装器，版本表也从官方接口拿
     case 'forge':
       return listForgeVersions()
@@ -377,10 +379,10 @@ export async function resolveDownloadUrl(
       return resolveFabricUrl(mcVersion)
     case 'velocity':
       return resolvePaperLikeUrl('velocity', mcVersion)
+    // Waterfall / BungeeCord 暂时关闭下载，只保留 Velocity
     case 'waterfall':
-      return resolvePaperLikeUrl('waterfall', mcVersion)
     case 'bungeecord':
-      return resolveBungeeUrl(mcVersion)
+      throw new Error('Waterfall / BungeeCord 下载已暂时关闭，目前只支持 Velocity')
     default:
       throw new Error('该服务端类型暂不支持自动下载，请手动安装后导入')
   }
@@ -681,8 +683,10 @@ async function installWithOfficialInstaller(
   )
 
   progress('extract', '正在运行官方安装器（要下载一两百 MB 运行库，第一次会慢）')
+  // 安装器是独立 Java 进程，不会用 Electron 的代理设置；不显式传 JVM 参数就会直连 Maven
+  const proxyArgs = proxyJvmArgs(await resolveProxyFor(file.url))
   let lastLine = ''
-  const res = await run(java, ['-Djava.awt.headless=true', '-jar', installerPath, '--installServer', dir], {
+  const res = await run(java, [...proxyArgs, '-Djava.awt.headless=true', '-jar', installerPath, '--installServer', dir], {
     cwd: dir,
     timeout: 30 * 60 * 1000,
     onChunk: (text) => {

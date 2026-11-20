@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs'
 import { extname } from 'node:path'
+import { httpFetch } from './http'
 
 const UA = 'CraftDesk/1.0 (Minecraft server manager)'
 
@@ -120,7 +121,7 @@ export async function fetchImageDataUrl(
   const timer = setTimeout(() => ctrl.abort(), REMOTE_TIMEOUT)
   let res: Response
   try {
-    res = await fetch(key, { headers: { 'User-Agent': UA }, signal: ctrl.signal })
+    res = await httpFetch(key, { headers: { 'User-Agent': UA }, signal: ctrl.signal })
   } catch (err) {
     throw new Error(`图片下载失败：${(err as Error).message}`)
   } finally {

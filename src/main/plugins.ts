@@ -1,6 +1,11 @@
 import { promises as fs } from 'node:fs'
 import { join, basename, relative, resolve, sep } from 'node:path'
-import type { PluginInfo, PluginKind } from '../shared/types'
+import type {
+  ExtensionLoader,
+  PluginInfo,
+  PluginKind,
+  ServerKind
+} from '../shared/types'
 import { ZipReader } from './zip'
 import { emptyMeta, parseMcdrDeps, pickAuthor, pickLocalized, readJarMeta } from './extmeta'
 import { buildRelations } from './relations'
@@ -18,6 +23,8 @@ function emptyRelations(): Pick<
   | 'ranges'
   | 'broken'
   | 'side'
+  | 'loaders'
+  | 'loaderMismatch'
   | 'requires'
   | 'usedBy'
 > {
@@ -28,6 +35,8 @@ function emptyRelations(): Pick<
     breaks: [],
     ranges: {},
     broken: false,
+    loaders: ['mcdr'],
+    loaderMismatch: false,
     // MCDR 插件跑在服务端的包装层里，属于服务端侧
     side: 'server',
     requires: [],
@@ -242,7 +251,8 @@ async function scanMcdrPlugins(
 async function scanJars(
   layout: ServerLayout,
   dir: string,
-  kind: PluginKind
+  kind: PluginKind,
+  preferredLoaders: ExtensionLoader[] = []
 ): Promise<PluginInfo[]> {
   const out: PluginInfo[] = []
   let entries: import('node:fs').Dirent[]
@@ -271,7 +281,7 @@ async function scanJars(
 
         let meta = emptyMeta()
         try {
-          meta = await readJarMeta(full)
+          meta = await readJarMeta(full, preferredLoaders)
         } catch {
           /* 元数据读不出来就只显示文件名 */
         }
@@ -297,6 +307,8 @@ async function scanJars(
           ranges: meta.ranges,
           broken: meta.broken,
           side: meta.side,
+          loaders: meta.loaders,
+          loaderMismatch: false,
           requires: [],
           usedBy: [],
           group: groupRel
@@ -315,22 +327,54 @@ async function scanJars(
  * 三类分开扫描、分开标注，界面上不会再把 MCDR 的 Python 插件
  * 和 Minecraft 的模组混在一起。
  */
-export async function listPlugins(layout: ServerLayout): Promise<PluginInfo[]> {
+export async function listPlugins(
+  layout: ServerLayout,
+  serverKind?: ServerKind
+): Promise<PluginInfo[]> {
   const jobs: Promise<PluginInfo[]>[] = []
 
   if (layout.mcdrPluginsDir) {
     const groupRel = relative(layout.root, layout.mcdrPluginsDir).split(sep).join('/')
     jobs.push(scanMcdrPlugins(layout, layout.mcdrPluginsDir, groupRel))
   }
+  const accepted: Partial<Record<ServerKind, ExtensionLoader[]>> = {
+    fabric: ['fabric'],
+    forge: ['forge'],
+    neoforge: ['neoforge', 'forge']
+  }
+  const modLoaders = serverKind ? accepted[serverKind] ?? [] : []
+
   if (layout.mcPluginsDir) {
     // 代理端的 plugins/ 装的是 Velocity / BungeeCord 插件，不是服务端插件
-    jobs.push(scanJars(layout, layout.mcPluginsDir, layout.isProxy ? 'proxy' : 'plugin'))
+    jobs.push(
+      scanJars(
+        layout,
+        layout.mcPluginsDir,
+        layout.isProxy ? 'proxy' : 'plugin',
+        layout.isProxy ? ['velocity', 'bungee', 'bukkit'] : ['bukkit']
+      )
+    )
   }
   if (layout.modsDir) {
-    jobs.push(scanJars(layout, layout.modsDir, 'mod'))
+    jobs.push(scanJars(layout, layout.modsDir, 'mod', modLoaders))
   }
 
   const results = (await Promise.all(jobs)).flat()
+
+  /*
+   * 加载器匹配。
+   *
+   * Forge 服的 mods/ 里经常混进几个纯 Fabric 模组（或者反过来）。
+   * 这些 jar 根本不会被加载，如果还按它写的 fabric-api 依赖去算，
+   * 就会凭空多出一堆「前置没有安装」。
+   */
+  const want = modLoaders.length ? modLoaders : undefined
+  if (want) {
+    for (const item of results) {
+      if (item.kind !== 'mod' || item.loaders.length === 0) continue
+      item.loaderMismatch = !item.loaders.some((l) => want.includes(l))
+    }
+  }
 
   // 依赖关系要等所有扩展都扫完才能算：跨目录、跨加载器的引用都得对上
   buildRelations(results)

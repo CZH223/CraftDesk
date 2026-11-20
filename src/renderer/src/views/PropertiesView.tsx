@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Icon } from '../components/Icon'
-import { Field, Switch, Spinner } from '../components/ui'
+import { Field, MemoryRange, Switch, Spinner } from '../components/ui'
 import { DeleteServerDialog } from '../components/DeleteServerDialog'
 import { ServerAvatar } from '../components/ServerAvatar'
 import { ServerIconDialog } from '../components/ServerIconDialog'
@@ -419,27 +419,12 @@ function LaunchForm({
 
       <div className="form-section">
         <h3>性能与参数</h3>
-        <Field label="最小内存" hint="对应 -Xms，单位 MB">
-          <input
-            className="input"
-            type="number"
-            min={128}
-            step={256}
-            value={form.memoryMin}
-            onChange={(e) => patch({ memoryMin: Number(e.target.value) })}
+        <Field label="内存分配" hint="滑条或直接输入；对应 -Xms / -Xmx">
+          <MemoryRange
+            min={form.memoryMin}
+            max={form.memoryMax}
+            onChange={({ min, max }) => patch({ memoryMin: min, memoryMax: max })}
           />
-          <span className="hint">MB</span>
-        </Field>
-        <Field label="最大内存" hint="对应 -Xmx，单位 MB">
-          <input
-            className="input"
-            type="number"
-            min={256}
-            step={256}
-            value={form.memoryMax}
-            onChange={(e) => patch({ memoryMax: Number(e.target.value) })}
-          />
-          <span className="hint">MB</span>
         </Field>
         <Field label="JVM 参数" hint="垃圾回收等调优参数，空格分隔">
           <textarea

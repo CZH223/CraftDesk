@@ -79,6 +79,26 @@ const TESTS = [
     what: '代理端初始配置：velocity.toml / config.yml 生成，能被自己的解析器读回来'
   },
   {
+    name: 'test-net-proxy.ts',
+    group: 'fast',
+    what: '给 Java 安装器的代理参数：环境变量解析、http/socks/无代理三种情况'
+  },
+  {
+    name: 'test-mod-download.ts',
+    group: 'fast',
+    what: '星图下载：最新版本挑选、跳过空文件、服务器类型到加载器的映射'
+  },
+  {
+    name: 'test-neoforge-versions.ts',
+    group: 'fast',
+    what: 'NeoForge 版本分组：1.20.1 旧坐标、26.1.1 / 26.1.2 补丁版本、安装器地址'
+  },
+  {
+    name: 'test-mcmod.ts',
+    group: 'fast',
+    what: 'MC百科关系：搜索页 / 星图 JSON 解析、本地匹配、联动节点合并'
+  },
+  {
     name: 'test-bungee-config.ts',
     group: 'fast',
     what: 'BungeeCord / Waterfall 的 config.yml 读写（官方模板、priorities、类型、注释）'
@@ -94,6 +114,11 @@ const TESTS = [
     what: '世界地图：位解包 / PNG 编码 / 损坏 region / 世界目录与连通块'
   },
   {
+    name: 'test-map-export.ts',
+    group: 'fast',
+    what: '地图导出：连通块拆分 / 4096 尺寸规划 / 瓦片拼接 / 透明背景 / PNG 解码'
+  },
+  {
     name: 'test-positions.ts',
     group: 'fast',
     what: '地图玩家位置：控制台/RCON 解析、轮询缓存、维度映射'
@@ -107,7 +132,7 @@ const TESTS = [
   {
     name: 'test-proxy-download.ts',
     group: 'net',
-    what: '代理端下载源：Velocity / Waterfall / BungeeCord（真下一个 25 MB 的验证）'
+    what: '代理端下载源：只保留 Velocity，Waterfall / BungeeCord 必须被拒绝'
   },
   { name: 'test-download.ts', group: 'net', what: '下载器：字节数与校验和（要下 60 MB）' },
   { name: 'test-registry.ts', group: 'net', what: 'Modrinth 与 MCDR 插件源' },

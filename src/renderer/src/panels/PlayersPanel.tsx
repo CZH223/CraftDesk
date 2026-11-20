@@ -166,7 +166,6 @@ export function PlayersPanel({ server }: { server: ServerView }): JSX.Element {
                 {p.whitelisted && <span className="tag blue">白名单</span>}
                 {p.banned && <span className="tag red">已封禁</span>}
               </div>
-              {p.uuid && <div className="row-sub">{p.uuid}</div>}
             </div>
             <div className="row-actions">
               <button

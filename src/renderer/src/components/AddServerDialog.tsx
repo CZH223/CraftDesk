@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Icon, type IconName } from './Icon'
-import { Field, Modal, Switch } from './ui'
+import { Field, MemoryRange, Modal, Switch } from './ui'
 import { useStore } from '../store'
 import { formatBytes, kindColor, kindLabel, serverInitials } from '../utils'
 import { javaHintText, proxyJavaHintText, proxyJavaMajor, requiredJavaMajor } from '../../../shared/javaHint'
@@ -29,9 +29,8 @@ const INSTALLER_KINDS: ServerKind[] = ['forge', 'neoforge']
  * 用户会以为这是「另一种服务端」，装完发现没有世界、指令也不一样。
  */
 const PROXY_KINDS: { kind: ServerKind; icon: IconName; desc: string }[] = [
-  { kind: 'velocity', icon: 'zap', desc: '现代代理，性能好' },
-  { kind: 'waterfall', icon: 'globe', desc: 'Paper 维护的 BungeeCord' },
-  { kind: 'bungeecord', icon: 'network', desc: '老牌代理，插件最多' }
+  // Waterfall / BungeeCord 暂时关闭下载与识别，只保留 Velocity
+  { kind: 'velocity', icon: 'zap', desc: '现代代理，性能好' }
 ]
 
 export function AddServerDialog({ onClose }: { onClose: () => void }): JSX.Element {
@@ -80,8 +79,8 @@ export function AddServerDialog({ onClose }: { onClose: () => void }): JSX.Eleme
               导入跨服网络
             </div>
             <div className="cd">
-              Velocity / BungeeCord 这类代理端：选中它的目录，CraftDesk 会读出配置里
-              的全部后端，在附近找到对应的目录，让你一次勾选要导入哪些。
+              Velocity 代理端：选中它的目录，CraftDesk 会读出配置里的全部后端，
+              在附近找到对应的目录，让你一次勾选要导入哪些。
             </div>
           </button>
 
@@ -96,8 +95,8 @@ export function AddServerDialog({ onClose }: { onClose: () => void }): JSX.Eleme
               下载跨服网络
             </div>
             <div className="cd">
-              下载 Velocity / Waterfall / BungeeCord，并生成它自己的配置
-              （velocity.toml、config.yml）。玩家连它，它再把人转发到后端服务器。
+              下载 Velocity，并生成它自己的 velocity.toml。玩家连它，它再把人
+              转发到后端服务器。（Waterfall / BungeeCord 暂时关闭）
             </div>
           </button>
         </div>
@@ -329,20 +328,11 @@ function ImportForm({ onBack, onClose }: { onBack: () => void; onClose: () => vo
         </div>
       )}
 
-      <Field label="最小内存 / 最大内存" hint="单位 MB">
-        <input
-          className="input"
-          type="number"
-          step={256}
-          value={memory.min}
-          onChange={(e) => setMemory((m) => ({ ...m, min: Number(e.target.value) }))}
-        />
-        <input
-          className="input"
-          type="number"
-          step={256}
-          value={memory.max}
-          onChange={(e) => setMemory((m) => ({ ...m, max: Number(e.target.value) }))}
+      <Field label="内存分配" hint="滑条调个大概，也可以在右侧直接输入 MB">
+        <MemoryRange
+          min={memory.min}
+          max={memory.max}
+          onChange={(v) => setMemory(v)}
         />
       </Field>
 
@@ -418,7 +408,7 @@ function NetworkForm({ onBack, onClose }: { onBack: () => void; onClose: () => v
   }, [settings])
 
   const pick = async (): Promise<void> => {
-    const res = await window.api.app.pickDirectory('选择代理端目录（含 velocity.toml 或 config.yml）')
+    const res = await window.api.app.pickDirectory('选择 Velocity 代理端目录（含 velocity.toml）')
     if (!res.ok || !res.data) return
 
     setScanning(true)
@@ -499,8 +489,8 @@ function NetworkForm({ onBack, onClose }: { onBack: () => void; onClose: () => v
           <Icon name="network" size={34} style={{ color: 'var(--text-faint)' }} />
           <div>选择代理端所在的文件夹</div>
           <div className="hint" style={{ maxWidth: 520, textAlign: 'center' }}>
-            里面应该有 <code>velocity.toml</code>（Velocity）或 <code>config.yml</code>
-            （BungeeCord / Waterfall）以及代理端的 jar。
+            里面应该有 <code>velocity.toml</code> 以及 Velocity 的 jar。
+            （Waterfall / BungeeCord 暂时关闭识别）
             <br />
             CraftDesk 会读出配置里列的后端，并在它旁边的目录里找出对应的服务端 ——
             只读，不动任何文件。
@@ -636,19 +626,10 @@ function NetworkForm({ onBack, onClose }: { onBack: () => void; onClose: () => v
           />
         </Field>
         <Field label="后端内存" hint="后端是独立的服务端，各自跑在自己的内存里">
-          <input
-            className="input"
-            type="number"
-            step={256}
-            value={memory.min}
-            onChange={(e) => setMemory((m) => ({ ...m, min: Number(e.target.value) }))}
-          />
-          <input
-            className="input"
-            type="number"
-            step={256}
-            value={memory.max}
-            onChange={(e) => setMemory((m) => ({ ...m, max: Number(e.target.value) }))}
+          <MemoryRange
+            min={memory.min}
+            max={memory.max}
+            onChange={(v) => setMemory(v)}
           />
         </Field>
       </div>
@@ -901,8 +882,8 @@ function CreateForm({
             只负责「玩家连这里 → 转发到后端服务器」，用来把好几台服拼成一个入口。
             <br />
             它没有 EULA，也不用 server.properties —— 端口和后端写在它自己的
-            {kind === 'velocity' ? ' velocity.toml' : ' config.yml'} 里，装完 CraftDesk
-            会按你下面填的端口先生成一份（Velocity 用的是核心里自带的官方模板）。
+            velocity.toml 里，装完 CraftDesk 会按你下面填的端口先生成一份
+            （Velocity 用的是核心里自带的官方模板）。
             <br />
             装好之后可以在「跨服配置」里加后端、在「网络拓扑」里看整张图；
             CraftDesk 会检查每个后端有没有真的接上代理端。
@@ -1000,20 +981,11 @@ function CreateForm({
         <Field label="服务器描述（MOTD）">
           <input className="input" value={motd} onChange={(e) => setMotd(e.target.value)} />
         </Field>
-        <Field label="最小内存 / 最大内存" hint="单位 MB">
-          <input
-            className="input"
-            type="number"
-            step={256}
-            value={memory.min}
-            onChange={(e) => setMemory((m) => ({ ...m, min: Number(e.target.value) }))}
-          />
-          <input
-            className="input"
-            type="number"
-            step={256}
-            value={memory.max}
-            onChange={(e) => setMemory((m) => ({ ...m, max: Number(e.target.value) }))}
+        <Field label="内存分配" hint="滑条调个大概，也可以在右侧直接输入 MB">
+          <MemoryRange
+            min={memory.min}
+            max={memory.max}
+            onChange={(v) => setMemory(v)}
           />
         </Field>
         {isProxy ? (

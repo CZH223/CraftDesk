@@ -18,12 +18,20 @@ export type ViewKey =
   | 'registry'
   | 'map'
   | 'settings'
-export type PanelKey = 'files' | 'players' | 'plugins' | 'configs' | 'backups'
+export type PanelKey = 'files' | 'players' | 'plugins' | 'mods' | 'configs' | 'backups'
 
 export interface Toast {
   id: number
   text: string
   type: 'info' | 'error' | 'success'
+}
+
+/** 从星图右键「前往下载界面」带到下载页的搜索条件 */
+export interface RegistryPreset {
+  query: string
+  kind: 'mod' | 'plugin'
+  /** 每次跳转都换一个值，下载页靠它重新应用同一条搜索 */
+  nonce: number
 }
 
 export interface ReadTextResult {
@@ -74,6 +82,10 @@ interface State {
   pushLogs: (id: string, lines: LogLine[]) => void
   loadLogs: (id: string) => Promise<void>
 
+  /** 星图右键跳转下载页时要应用的搜索条件 */
+  registryPreset: RegistryPreset | null
+  openRegistrySearch: (query: string, kind?: 'mod' | 'plugin') => void
+
   select: (id: string | null) => void
   setView: (v: ViewKey) => void
   setPanel: (p: PanelKey) => void
@@ -86,6 +98,7 @@ interface State {
 }
 
 let toastSeq = 0
+let registryPresetSeq = 0
 
 export const useStore = create<State>((set, get) => ({
   ready: false,
@@ -203,6 +216,14 @@ export const useStore = create<State>((set, get) => ({
     }
     set({ activeId: id, panelOpen: true })
     void get().loadLogs(id)
+  },
+
+  registryPreset: null,
+  openRegistrySearch: (query, kind = 'mod') => {
+    set({
+      registryPreset: { query, kind, nonce: ++registryPresetSeq },
+      view: 'registry'
+    })
   },
 
   setView: (view) => set({ view }),
